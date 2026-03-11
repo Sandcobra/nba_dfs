@@ -46,7 +46,7 @@ class MathAgent:
         logger.info(f"Running {self.n_sims:,} Monte Carlo simulations...")
         n_players = len(projections)
         mu  = projections["projected_pts_dk"].fillna(25).values.clip(1, 90)
-        std = projections.get("projection_sd", pd.Series(mu * 0.28)).fillna(mu * 0.28).values.clip(1, 40)
+        std = projections.get("projection_sd", pd.Series(mu * 0.28)).fillna(pd.Series(mu * 0.28)).values.clip(1, 40)
 
         if correlation_matrix is not None and correlation_matrix.shape == (n_players, n_players):
             sim_matrix = self._correlated_simulation(mu, std, correlation_matrix)
@@ -262,7 +262,7 @@ class MathAgent:
         std = lineup_projections.get(
             "projection_sd",
             pd.Series(mu * 0.28)
-        ).fillna(mu * 0.28).values.clip(1)
+        ).fillna(pd.Series(mu * 0.28)).values.clip(1)
 
         sim = self._independent_simulation(mu, std)  # (n_sims, 8)
         lineup_totals = sim.sum(axis=1)               # (n_sims,)

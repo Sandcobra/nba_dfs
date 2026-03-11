@@ -1,29 +1,24 @@
 """
 Data Aggregation Agent.
-Orchestrates all data collection for a given slate:
-  - NBA API (stats, rosters, game logs, shot charts, tracking)
-  - Injury reports
-  - Vegas lines
-  - DraftKings / FanDuel salary files
-  - Back-to-back detection
-  - Implied team totals
+Orchestrates all data collection for a given slate using cached ESPN data,
+injury scrapers, and The Odds API (no stats.nba.com calls).
 """
 
-import time
 from datetime import date, datetime
-from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 from loguru import logger
 
-from data.nba_api_client import NBAApiClient
+from data.espn_data_client import ESPNDataClient
 from data.injury_scraper import InjuryScraper
+from data.odds_client import OddsClient
 from core.database import get_db
 from core.config import (
-    THE_ODDS_API_KEY, CURRENT_SEASON, NBA_API_DELAY_SECS,
-    CACHE_DIR, MIN_MINUTES_THRESHOLD
+    THE_ODDS_API_KEY, CURRENT_SEASON,
+    CACHE_DIR,
 )
+from utils.helpers import normalize_name
 
 
 class DataAgent:
@@ -32,11 +27,12 @@ class DataAgent:
     """
 
     def __init__(self, season: str = CURRENT_SEASON):
-        self.season   = season
-        self.api      = NBAApiClient(season=season)
-        self.scraper  = InjuryScraper()
-        self.db       = get_db()
-        self._cache   = {}
+        self.season = season
+        self.espn = ESPNDataClient(cache_dir=CACHE_DIR / "espn", season=season)
+        self.odds = OddsClient(api_key=THE_ODDS_API_KEY)
+        self.scraper = InjuryScraper()
+        self.db = get_db()
+        self._cache = {}
 
     # ── Full slate data pipeline ───────────────────────────────────────────────
     def build_slate_data(
@@ -52,7 +48,7 @@ class DataAgent:
         logger.info(f"Building slate data for {today}...")
 
         # 1. Get today's games
-        games_df = self._get_todays_games(today)
+        games_df = self._get_todays_games(player_pool, today)
 
         # 2. Vegas lines
         vegas_df = self._get_vegas_lines(today, games_df)
@@ -61,28 +57,26 @@ class DataAgent:
         injuries_df = self._get_injuries()
 
         # 4. Team stats (season + last 10)
-        team_stats    = self._get_team_stats()
+        team_stats = self._get_team_stats()
         team_stats_L10 = self._get_team_stats(last_n=10)
 
-        # 5. Pace stats
+        # 5. Pace stats (placeholder until BBRef integration)
         pace_df = self._get_pace_stats()
 
         # 6. Player game logs (last N games for each player in pool)
         game_logs = self._get_player_game_logs(player_pool)
 
-        # 7. Season stats
-        season_stats_df = self._get_season_player_stats()
+        # 7. Season stats derived from cached logs
+        season_stats_df = self._get_season_player_stats(game_logs)
 
-        # 8. Shot location data
-        shot_loc_df    = self._get_shot_locations()
-        team_shot_d_df = self._get_team_shot_defense()
-        team_shot_d_L10 = self._get_team_shot_defense(last_n=10)
-
-        # 9. Tracking stats (possessions / speed / rebounding)
-        tracking_df = self._get_tracking_stats()
+        # 8/9. Shot location + tracking stats (not available without NBA API)
+        shot_loc_df = pd.DataFrame()
+        team_shot_d_df = pd.DataFrame()
+        team_shot_d_L10 = pd.DataFrame()
+        tracking_df = pd.DataFrame()
 
         # 10. B2B detection
-        schedule_df = self._get_schedule_for_b2b(player_pool)
+        schedule_df = self._get_schedule_for_b2b(player_pool, today)
 
         # 11. Enrich player pool with all context
         enriched_pool = self._enrich_player_pool(
@@ -125,27 +119,55 @@ class DataAgent:
         }
 
     # ── Individual fetch methods ───────────────────────────────────────────────
-    def _get_todays_games(self, slate_date: str) -> pd.DataFrame:
+    def _get_todays_games(self, player_pool: pd.DataFrame, slate_date: str) -> pd.DataFrame:
+        target_date = None
         try:
-            dk_date = datetime.strptime(slate_date, "%Y-%m-%d").strftime("%m/%d/%Y")
-            df = self.api.get_todays_scoreboard(game_date=dk_date)
-            logger.info(f"Today's games: {len(df)} found")
-            return df
-        except Exception as e:
-            logger.warning(f"Could not fetch today's games: {e}")
-            return pd.DataFrame()
+            target_date = datetime.strptime(slate_date, "%Y-%m-%d").date()
+        except Exception:
+            pass
+
+        odds_df = self.odds.get_nba_odds()
+        todays = pd.DataFrame()
+        if not odds_df.empty and target_date is not None and "game_date" in odds_df.columns:
+            todays = odds_df[odds_df["game_date"] == target_date].reset_index(drop=True)
+
+        if not todays.empty:
+            self._cache["odds_df"] = todays
+            logger.info(f"Today's games from Odds API: {len(todays)} matchups")
+            return todays[["home_team", "away_team", "matchup", "total", "home_spread", "home_implied", "away_implied"]]
+
+        if not odds_df.empty:
+            # Keep the raw odds for later even if not date-filtered
+            self._cache["odds_df"] = odds_df
+
+        fallback = self._games_from_player_pool(player_pool)
+        if fallback.empty:
+            logger.warning("Could not determine today's games from odds or salary file")
+        else:
+            logger.info(f"Using {len(fallback)} games inferred from salary file")
+        return fallback
 
     def _get_vegas_lines(self, slate_date: str, games_df: pd.DataFrame) -> pd.DataFrame:
-        try:
-            vdf = self.scraper.get_vegas_lines(api_key=THE_ODDS_API_KEY)
-            if vdf.empty:
-                logger.warning("No Vegas lines available — using defaults")
-                return self._default_vegas_lines(games_df)
-            logger.info(f"Vegas lines fetched: {len(vdf)} games")
-            return vdf
-        except Exception as e:
-            logger.warning(f"Vegas lines error: {e}")
+        odds_df = self._cache.get("odds_df")
+        if odds_df is None or odds_df.empty:
+            odds_df = self.odds.get_nba_odds()
+
+        if odds_df is None or odds_df.empty:
+            logger.warning("No Vegas lines available — using defaults")
             return self._default_vegas_lines(games_df)
+
+        try:
+            target_date = datetime.strptime(slate_date, "%Y-%m-%d").date()
+        except Exception:
+            target_date = None
+
+        if target_date is not None and "game_date" in odds_df.columns:
+            filtered = odds_df[odds_df["game_date"] == target_date]
+            if not filtered.empty:
+                odds_df = filtered
+
+        logger.info(f"Vegas lines fetched: {len(odds_df)} games")
+        return odds_df.reset_index(drop=True)
 
     def _default_vegas_lines(self, games_df: pd.DataFrame) -> pd.DataFrame:
         """Default game totals when Vegas data unavailable."""
@@ -153,14 +175,37 @@ class DataAgent:
             return pd.DataFrame()
         rows = []
         for _, row in games_df.iterrows():
+            home = row.get("home_team") or row.get("HOME_TEAM_ABBREVIATION") or row.get("home_team_raw", "")
+            away = row.get("away_team") or row.get("VISITOR_TEAM_ABBREVIATION") or row.get("away_team_raw", "")
+            matchup = row.get("matchup") or (f"{away}@{home}" if home and away else "")
             rows.append({
-                "home_team":  row.get("HOME_TEAM_ABBREVIATION", ""),
-                "away_team":  row.get("VISITOR_TEAM_ABBREVIATION", ""),
-                "total":      225.5,
+                "home_team": home,
+                "away_team": away,
+                "matchup": matchup,
+                "total": 225.5,
                 "home_spread": -2.5,
-                "bookmaker":  "default",
+                "home_implied": 112.75,
+                "away_implied": 112.75,
+                "bookmaker": "default",
             })
         return pd.DataFrame(rows)
+
+    def _games_from_player_pool(self, player_pool: pd.DataFrame) -> pd.DataFrame:
+        if "away_team_raw" not in player_pool.columns or "home_team_raw" not in player_pool.columns:
+            return pd.DataFrame()
+        games = (
+            player_pool.dropna(subset=["away_team_raw", "home_team_raw"])
+            [["away_team_raw", "home_team_raw"]]
+            .drop_duplicates()
+            .rename(columns={"away_team_raw": "away_team", "home_team_raw": "home_team"})
+        )
+        if games.empty:
+            return pd.DataFrame()
+        games["matchup"] = games.apply(
+            lambda r: f"{r['away_team']}@{r['home_team']}" if r["away_team"] and r["home_team"] else "",
+            axis=1,
+        )
+        return games.reset_index(drop=True)
 
     def _get_injuries(self) -> pd.DataFrame:
         try:
@@ -173,18 +218,19 @@ class DataAgent:
 
     def _get_team_stats(self, last_n: int = 0) -> pd.DataFrame:
         try:
-            df = self.api.get_team_stats(measure_type="Base", per_mode="PerGame", last_n=last_n)
+            df = self.espn.get_team_stats_from_gamelogs(last_n=last_n)
+            if df.empty:
+                logger.warning(f"Team stats ({last_n or 'season'} games) unavailable from ESPN cache")
+            else:
+                logger.info(f"Team stats ({last_n or 'season'} games) loaded: {len(df)} teams")
             return df
         except Exception as e:
             logger.warning(f"Team stats ({last_n}G) failed: {e}")
             return pd.DataFrame()
 
     def _get_pace_stats(self) -> pd.DataFrame:
-        try:
-            return self.api.get_pace_stats()
-        except Exception as e:
-            logger.warning(f"Pace stats failed: {e}")
-            return pd.DataFrame()
+        logger.info("Pace stats skipped (requires Basketball Reference scrape)")
+        return pd.DataFrame()
 
     def _get_player_game_logs(
         self, player_pool: pd.DataFrame, n_games: int = 20
