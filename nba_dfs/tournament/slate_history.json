@@ -1,0 +1,33 @@
+[
+  {
+    "date": "2026-03-08",
+    "contest_file": "contest-results_3_9.csv",
+    "total_entries": 13824,
+    "cash_line": 301.5,
+    "win_score": 361.25,
+    "our_best": 286.0,
+    "our_avg": 238.8625,
+    "cashed": 0,
+    "n_lineups": 20,
+    "adjustments": {}
+  },
+  {
+    "date": "2026-03-10",
+    "contest_file": "contest-results_3_9.csv",
+    "total_entries": 13824,
+    "cash_line": 301.5,
+    "win_score": 361.25,
+    "our_best": 286.0,
+    "our_avg": 238.8625,
+    "cashed": 0,
+    "n_lineups": 20,
+    "adjustments": {
+      "own_bias": -14.44,
+      "dnp_above_5000": 0.078,
+      "dnp_4500_5000": 0.103,
+      "dnp_sub_3500": 0.437,
+      "dnp_4000_4500": 0.201,
+      "dnp_3500_4000": 0.326
+    }
+  }
+]

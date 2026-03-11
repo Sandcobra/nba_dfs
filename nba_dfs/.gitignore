@@ -1,0 +1,21 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Cache & output
+cache/
+lineups/
+logs/
+*.db
+*.csv
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "slates_processed": 2,
+  "last_updated": "2026-03-10T07:56:15.695573",
+  "proj_mult": {
+    "BALL_DOM_G": 1.0,
+    "COMBO_G": 1.0,
+    "CATCH_SHOOT_W": 1.0,
+    "POINT_FORWARD": 1.0,
+    "STRETCH_BIG": 1.0,
+    "RIM_RUNNER": 1.0,
+    "PLAYMAKING_BIG": 1.0,
+    "WING_STOPPER": 1.0,
+    "": 0.9951
+  },
+  "b2b_proj_bias": 0.0,
+  "own_bias": -14.44,
+  "own_rmse": 16.8,
+  "dnp_rate_by_salary": {
+    "sub_3500": 0.437,
+    "3500_4000": 0.326,
+    "4000_4500": 0.201,
+    "4500_5000": 0.103,
+    "above_5000": 0.078
+  },
+  "strategy_hit_rates": {
+    "ceiling": 0.0,
+    "leverage": 0.0,
+    "fpe": 0.0,
+    "thompson": 0.0
+  },
+  "recent_best_scores": [
+    286.0,
+    286.0
+  ],
+  "recent_cash_lines": [
+    301.5,
+    301.5
+  ],
+  "recent_win_scores": [
+    361.25,
+    361.25
+  ]
+}

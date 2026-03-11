@@ -1,0 +1,37 @@
+{
+  "42211136": {
+    "delta_dk": -4.7,
+    "dk_with": 41.31,
+    "dk_without": 36.61,
+    "min_with": 20,
+    "min_without": 38
+  },
+  "42211219": {
+    "delta_dk": -2.42,
+    "dk_with": 37.64,
+    "dk_without": 35.22,
+    "min_with": 10,
+    "min_without": 31
+  },
+  "42211152": {
+    "delta_dk": 10.9,
+    "dk_with": 23.53,
+    "dk_without": 34.43,
+    "min_with": 23,
+    "min_without": 35
+  },
+  "42211259": {
+    "delta_dk": -3.32,
+    "dk_with": 34.96,
+    "dk_without": 31.64,
+    "min_with": 19,
+    "min_without": 33
+  },
+  "42211241": {
+    "delta_dk": -8.08,
+    "dk_with": 40.72,
+    "dk_without": 32.64,
+    "min_with": 12,
+    "min_without": 18
+  }
+}

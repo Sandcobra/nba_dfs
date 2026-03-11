@@ -1,0 +1,107 @@
+{
+  "42221074": {
+    "delta_dk": -2.25,
+    "dk_with": 49.57,
+    "dk_without": 47.32,
+    "min_with": 38,
+    "min_without": 29
+  },
+  "42221062": {
+    "delta_dk": 1.8,
+    "dk_with": 42.35,
+    "dk_without": 44.15,
+    "min_with": 38,
+    "min_without": 30
+  },
+  "42221142": {
+    "delta_dk": -2.95,
+    "dk_with": 39.9,
+    "dk_without": 36.95,
+    "min_with": 27,
+    "min_without": 28
+  },
+  "42221111": {
+    "delta_dk": -1.39,
+    "dk_with": 35.05,
+    "dk_without": 33.66,
+    "min_with": 29,
+    "min_without": 25
+  },
+  "42221159": {
+    "delta_dk": -3.46,
+    "dk_with": 35.02,
+    "dk_without": 31.56,
+    "min_with": 39,
+    "min_without": 31
+  },
+  "42221367": {
+    "delta_dk": -0.04,
+    "dk_with": 39.71,
+    "dk_without": 39.67,
+    "min_with": 28,
+    "min_without": 23
+  },
+  "42221418": {
+    "delta_dk": -0.13,
+    "dk_with": 31.25,
+    "dk_without": 31.12,
+    "min_with": 37,
+    "min_without": 21
+  },
+  "42221401": {
+    "delta_dk": -1.17,
+    "dk_with": 27.08,
+    "dk_without": 25.91,
+    "min_with": 22,
+    "min_without": 22
+  },
+  "42221447": {
+    "delta_dk": -1.35,
+    "dk_with": 28.51,
+    "dk_without": 27.16,
+    "min_with": 38,
+    "min_without": 23
+  },
+  "42221479": {
+    "delta_dk": 7.01,
+    "dk_with": 31.56,
+    "dk_without": 38.57,
+    "min_with": 33,
+    "min_without": 25
+  },
+  "42221484": {
+    "delta_dk": -7.42,
+    "dk_with": 29.04,
+    "dk_without": 21.62,
+    "min_with": 23,
+    "min_without": 14
+  },
+  "42221507": {
+    "delta_dk": -5.16,
+    "dk_with": 32.29,
+    "dk_without": 27.13,
+    "min_with": 26,
+    "min_without": 24
+  },
+  "42221430": {
+    "delta_dk": -4.93,
+    "dk_with": 33.0,
+    "dk_without": 28.07,
+    "min_with": 31,
+    "min_without": 27
+  },
+  "42221557": {
+    "delta_dk": -5.65,
+    "dk_with": 34.11,
+    "dk_without": 28.46,
+    "min_with": 10,
+    "min_without": 9
+  },
+  "42221548": {
+    "delta_dk": 11.32,
+    "dk_with": 21.6,
+    "dk_without": 32.92,
+    "min_with": 18,
+    "min_without": 6
+  }
+}

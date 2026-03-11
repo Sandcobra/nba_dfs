@@ -1,0 +1,16 @@
+{
+  "42211237": {
+    "delta_dk": 3.42,
+    "dk_with": 31.94,
+    "dk_without": 35.36,
+    "min_with": 13,
+    "min_without": 27
+  },
+  "42211267": {
+    "delta_dk": 0.05,
+    "dk_with": 30.36,
+    "dk_without": 30.41,
+    "min_with": 17,
+    "min_without": 28
+  }
+}

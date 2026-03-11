@@ -1,0 +1,58 @@
+{
+  "42210961": {
+    "delta_dk": -1.92,
+    "dk_with": 45.69,
+    "dk_without": 43.77,
+    "min_with": 12,
+    "min_without": 43
+  },
+  "42210987": {
+    "delta_dk": 4.98,
+    "dk_with": 32.29,
+    "dk_without": 37.27,
+    "min_with": 16,
+    "min_without": 49
+  },
+  "42211109": {
+    "delta_dk": -4.14,
+    "dk_with": 37.03,
+    "dk_without": 32.89,
+    "min_with": 16,
+    "min_without": 47
+  },
+  "42211184": {
+    "delta_dk": -4.02,
+    "dk_with": 32.05,
+    "dk_without": 28.03,
+    "min_with": 17,
+    "min_without": 44
+  },
+  "42211283": {
+    "delta_dk": -1.12,
+    "dk_with": 40.94,
+    "dk_without": 39.82,
+    "min_with": 15,
+    "min_without": 35
+  },
+  "42211327": {
+    "delta_dk": -7.3,
+    "dk_with": 38.66,
+    "dk_without": 31.36,
+    "min_with": 15,
+    "min_without": 31
+  },
+  "42211302": {
+    "delta_dk": -8.56,
+    "dk_with": 37.18,
+    "dk_without": 28.62,
+    "min_with": 21,
+    "min_without": 17
+  },
+  "42211340": {
+    "delta_dk": -6.14,
+    "dk_with": 33.05,
+    "dk_without": 26.91,
+    "min_with": 15,
+    "min_without": 30
+  }
+}

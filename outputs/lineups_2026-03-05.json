@@ -1,0 +1,1542 @@
+[
+  {
+    "player_ids": [
+      "42194420",
+      "42194424",
+      "42194453",
+      "42194659",
+      "42194686",
+      "42194944",
+      "42194955",
+      "42194922"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Jaylen Brown",
+      "Deni Avdija",
+      "Coby White",
+      "Julian Champagnie",
+      "Miles McBride",
+      "Steven Adams",
+      "Caleb Love"
+    ],
+    "positions": [
+      "C",
+      "SG",
+      "SF",
+      "PG",
+      "SF",
+      "PG",
+      "C",
+      "PG"
+    ],
+    "teams": [
+      "DEN",
+      "BOS",
+      "POR",
+      "CHA",
+      "SAS",
+      "NYK",
+      "HOU",
+      "POR"
+    ],
+    "salaries": [
+      12500,
+      10000,
+      8600,
+      5200,
+      4700,
+      3000,
+      3000,
+      3000
+    ],
+    "projections": [
+      67.79,
+      48.15,
+      43.79,
+      30.71,
+      24.06,
+      23.25,
+      21.93,
+      20.08
+    ],
+    "total_salary": 50000,
+    "proj_pts": 279.76,
+    "ceiling": 380.01,
+    "proj_own": 39.0,
+    "slot_assignment": {
+      "UTIL": "42194420",
+      "F": "42194424",
+      "PF": "42194453",
+      "SG": "42194659",
+      "SF": "42194686",
+      "PG": "42194944",
+      "C": "42194955",
+      "G": "42194922"
+    },
+    "lineup_num": 1
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194439",
+      "42194453",
+      "42194560",
+      "42194713",
+      "42194944",
+      "42194955",
+      "42194922"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Jamal Murray",
+      "Deni Avdija",
+      "Miles Bridges",
+      "Keldon Johnson",
+      "Miles McBride",
+      "Steven Adams",
+      "Caleb Love"
+    ],
+    "positions": [
+      "C",
+      "PG",
+      "SF",
+      "PF",
+      "SG",
+      "PG",
+      "C",
+      "PG"
+    ],
+    "teams": [
+      "DEN",
+      "DEN",
+      "POR",
+      "CHA",
+      "SAS",
+      "NYK",
+      "HOU",
+      "POR"
+    ],
+    "salaries": [
+      12500,
+      9100,
+      8600,
+      6400,
+      4300,
+      3000,
+      3000,
+      3000
+    ],
+    "projections": [
+      67.79,
+      46.57,
+      43.79,
+      32.9,
+      23.68,
+      23.25,
+      21.93,
+      20.08
+    ],
+    "total_salary": 49900,
+    "proj_pts": 279.99,
+    "ceiling": 380.32,
+    "proj_own": 39.4,
+    "slot_assignment": {
+      "UTIL": "42194420",
+      "G": "42194439",
+      "SF": "42194453",
+      "PF": "42194560",
+      "F": "42194713",
+      "PG": "42194944",
+      "C": "42194955",
+      "SG": "42194922"
+    },
+    "lineup_num": 2
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194439",
+      "42194453",
+      "42194601",
+      "42194686",
+      "42194944",
+      "42194955",
+      "42194922"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Jamal Murray",
+      "Deni Avdija",
+      "Mikal Bridges",
+      "Julian Champagnie",
+      "Miles McBride",
+      "Steven Adams",
+      "Caleb Love"
+    ],
+    "positions": [
+      "C",
+      "PG",
+      "SF",
+      "SF",
+      "SF",
+      "PG",
+      "C",
+      "PG"
+    ],
+    "teams": [
+      "DEN",
+      "DEN",
+      "POR",
+      "NYK",
+      "SAS",
+      "NYK",
+      "HOU",
+      "POR"
+    ],
+    "salaries": [
+      12500,
+      9100,
+      8600,
+      6000,
+      4700,
+      3000,
+      3000,
+      3000
+    ],
+    "projections": [
+      67.79,
+      46.57,
+      43.79,
+      31.3,
+      24.06,
+      23.25,
+      21.93,
+      20.08
+    ],
+    "total_salary": 49900,
+    "proj_pts": 278.77,
+    "ceiling": 378.66,
+    "proj_own": 39.2,
+    "slot_assignment": {
+      "UTIL": "42194420",
+      "G": "42194439",
+      "PF": "42194453",
+      "SF": "42194601",
+      "F": "42194686",
+      "PG": "42194944",
+      "C": "42194955",
+      "SG": "42194922"
+    },
+    "lineup_num": 3
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194453",
+      "42194508",
+      "42194560",
+      "42194659",
+      "42194713",
+      "42194944",
+      "42194955"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Deni Avdija",
+      "Stephon Castle",
+      "Miles Bridges",
+      "Coby White",
+      "Keldon Johnson",
+      "Miles McBride",
+      "Steven Adams"
+    ],
+    "positions": [
+      "C",
+      "SF",
+      "SG",
+      "PF",
+      "PG",
+      "SG",
+      "PG",
+      "C"
+    ],
+    "teams": [
+      "DEN",
+      "POR",
+      "SAS",
+      "CHA",
+      "CHA",
+      "SAS",
+      "NYK",
+      "HOU"
+    ],
+    "salaries": [
+      12500,
+      8600,
+      7000,
+      6400,
+      5200,
+      4300,
+      3000,
+      3000
+    ],
+    "projections": [
+      67.79,
+      43.79,
+      35.91,
+      32.9,
+      30.71,
+      23.68,
+      23.25,
+      21.93
+    ],
+    "total_salary": 50000,
+    "proj_pts": 279.96,
+    "ceiling": 380.28,
+    "proj_own": 41.2,
+    "slot_assignment": {
+      "UTIL": "42194420",
+      "SF": "42194453",
+      "G": "42194508",
+      "PF": "42194560",
+      "SG": "42194659",
+      "F": "42194713",
+      "PG": "42194944",
+      "C": "42194955"
+    },
+    "lineup_num": 4
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194453",
+      "42194436",
+      "42194659",
+      "42194619",
+      "42194944",
+      "42194955",
+      "42194922"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Deni Avdija",
+      "Kevin Durant",
+      "Coby White",
+      "Devin Vassell",
+      "Miles McBride",
+      "Steven Adams",
+      "Caleb Love"
+    ],
+    "positions": [
+      "C",
+      "SF",
+      "SF",
+      "PG",
+      "SF",
+      "PG",
+      "C",
+      "PG"
+    ],
+    "teams": [
+      "DEN",
+      "POR",
+      "HOU",
+      "CHA",
+      "SAS",
+      "NYK",
+      "HOU",
+      "POR"
+    ],
+    "salaries": [
+      12500,
+      8600,
+      9200,
+      5200,
+      5500,
+      3000,
+      3000,
+      3000
+    ],
+    "projections": [
+      67.79,
+      43.79,
+      43.67,
+      30.71,
+      26.56,
+      23.25,
+      21.93,
+      20.08
+    ],
+    "total_salary": 50000,
+    "proj_pts": 277.78,
+    "ceiling": 377.32,
+    "proj_own": 39.4,
+    "slot_assignment": {
+      "UTIL": "42194420",
+      "PF": "42194453",
+      "F": "42194436",
+      "G": "42194659",
+      "SF": "42194619",
+      "PG": "42194944",
+      "C": "42194955",
+      "SG": "42194922"
+    },
+    "lineup_num": 5
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194424",
+      "42194574",
+      "42194560",
+      "42194659",
+      "42194944",
+      "42194922",
+      "42194803"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Jaylen Brown",
+      "Nikola Vucevic",
+      "Miles Bridges",
+      "Coby White",
+      "Miles McBride",
+      "Caleb Love",
+      "Harrison Barnes"
+    ],
+    "positions": [
+      "C",
+      "SG",
+      "C",
+      "PF",
+      "PG",
+      "PG",
+      "PG",
+      "PF"
+    ],
+    "teams": [
+      "DEN",
+      "BOS",
+      "BOS",
+      "CHA",
+      "CHA",
+      "NYK",
+      "POR",
+      "SAS"
+    ],
+    "salaries": [
+      12500,
+      10000,
+      6300,
+      6400,
+      5200,
+      3000,
+      3000,
+      3500
+    ],
+    "projections": [
+      67.79,
+      48.15,
+      36.35,
+      32.9,
+      30.71,
+      23.25,
+      20.08,
+      19.17
+    ],
+    "total_salary": 49900,
+    "proj_pts": 278.4,
+    "ceiling": 378.16,
+    "proj_own": 40.0,
+    "slot_assignment": {
+      "C": "42194420",
+      "SF": "42194424",
+      "UTIL": "42194574",
+      "PF": "42194560",
+      "SG": "42194659",
+      "PG": "42194944",
+      "G": "42194922",
+      "F": "42194803"
+    },
+    "lineup_num": 6
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194424",
+      "42194542",
+      "42194560",
+      "42194659",
+      "42194944",
+      "42194955",
+      "42194922"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Jaylen Brown",
+      "Aaron Gordon",
+      "Miles Bridges",
+      "Coby White",
+      "Miles McBride",
+      "Steven Adams",
+      "Caleb Love"
+    ],
+    "positions": [
+      "C",
+      "SG",
+      "PF",
+      "PF",
+      "PG",
+      "PG",
+      "C",
+      "PG"
+    ],
+    "teams": [
+      "DEN",
+      "BOS",
+      "DEN",
+      "CHA",
+      "CHA",
+      "NYK",
+      "HOU",
+      "POR"
+    ],
+    "salaries": [
+      12500,
+      10000,
+      6600,
+      6400,
+      5200,
+      3000,
+      3000,
+      3000
+    ],
+    "projections": [
+      67.79,
+      48.15,
+      32.95,
+      32.9,
+      30.71,
+      23.25,
+      21.93,
+      20.08
+    ],
+    "total_salary": 49700,
+    "proj_pts": 277.76,
+    "ceiling": 377.29,
+    "proj_own": 39.4,
+    "slot_assignment": {
+      "UTIL": "42194420",
+      "SF": "42194424",
+      "F": "42194542",
+      "PF": "42194560",
+      "SG": "42194659",
+      "PG": "42194944",
+      "C": "42194955",
+      "G": "42194922"
+    },
+    "lineup_num": 7
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194453",
+      "42194574",
+      "42194560",
+      "42194659",
+      "42194686",
+      "42194944",
+      "42194922"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Deni Avdija",
+      "Nikola Vucevic",
+      "Miles Bridges",
+      "Coby White",
+      "Julian Champagnie",
+      "Miles McBride",
+      "Caleb Love"
+    ],
+    "positions": [
+      "C",
+      "SF",
+      "C",
+      "PF",
+      "PG",
+      "SF",
+      "PG",
+      "PG"
+    ],
+    "teams": [
+      "DEN",
+      "POR",
+      "BOS",
+      "CHA",
+      "CHA",
+      "SAS",
+      "NYK",
+      "POR"
+    ],
+    "salaries": [
+      12500,
+      8600,
+      6300,
+      6400,
+      5200,
+      4700,
+      3000,
+      3000
+    ],
+    "projections": [
+      67.79,
+      43.79,
+      36.35,
+      32.9,
+      30.71,
+      24.06,
+      23.25,
+      20.08
+    ],
+    "total_salary": 49700,
+    "proj_pts": 278.93,
+    "ceiling": 378.89,
+    "proj_own": 40.9,
+    "slot_assignment": {
+      "C": "42194420",
+      "SF": "42194453",
+      "UTIL": "42194574",
+      "PF": "42194560",
+      "SG": "42194659",
+      "F": "42194686",
+      "PG": "42194944",
+      "G": "42194922"
+    },
+    "lineup_num": 8
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194424",
+      "42194453",
+      "42194560",
+      "42194944",
+      "42194955",
+      "42194922",
+      "42194803"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Jaylen Brown",
+      "Deni Avdija",
+      "Miles Bridges",
+      "Miles McBride",
+      "Steven Adams",
+      "Caleb Love",
+      "Harrison Barnes"
+    ],
+    "positions": [
+      "C",
+      "SG",
+      "SF",
+      "PF",
+      "PG",
+      "C",
+      "PG",
+      "PF"
+    ],
+    "teams": [
+      "DEN",
+      "BOS",
+      "POR",
+      "CHA",
+      "NYK",
+      "HOU",
+      "POR",
+      "SAS"
+    ],
+    "salaries": [
+      12500,
+      10000,
+      8600,
+      6400,
+      3000,
+      3000,
+      3000,
+      3500
+    ],
+    "projections": [
+      67.79,
+      48.15,
+      43.79,
+      32.9,
+      23.25,
+      21.93,
+      20.08,
+      19.17
+    ],
+    "total_salary": 50000,
+    "proj_pts": 277.06,
+    "ceiling": 376.33,
+    "proj_own": 38.6,
+    "slot_assignment": {
+      "UTIL": "42194420",
+      "G": "42194424",
+      "SF": "42194453",
+      "PF": "42194560",
+      "PG": "42194944",
+      "C": "42194955",
+      "SG": "42194922",
+      "F": "42194803"
+    },
+    "lineup_num": 9
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194453",
+      "42194574",
+      "42194601",
+      "42194659",
+      "42194713",
+      "42194944",
+      "42194764"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Deni Avdija",
+      "Nikola Vucevic",
+      "Mikal Bridges",
+      "Coby White",
+      "Keldon Johnson",
+      "Miles McBride",
+      "Jordan Poole"
+    ],
+    "positions": [
+      "C",
+      "SF",
+      "C",
+      "SF",
+      "PG",
+      "SG",
+      "PG",
+      "PG"
+    ],
+    "teams": [
+      "DEN",
+      "POR",
+      "BOS",
+      "NYK",
+      "CHA",
+      "SAS",
+      "NYK",
+      "NOP"
+    ],
+    "salaries": [
+      12500,
+      8600,
+      6300,
+      6000,
+      5200,
+      4300,
+      3000,
+      4000
+    ],
+    "projections": [
+      67.79,
+      43.79,
+      36.35,
+      31.3,
+      30.71,
+      23.68,
+      23.25,
+      22.74
+    ],
+    "total_salary": 49900,
+    "proj_pts": 279.61,
+    "ceiling": 379.81,
+    "proj_own": 41.8,
+    "slot_assignment": {
+      "C": "42194420",
+      "PF": "42194453",
+      "UTIL": "42194574",
+      "F": "42194601",
+      "SG": "42194659",
+      "SF": "42194713",
+      "PG": "42194944",
+      "G": "42194764"
+    },
+    "lineup_num": 10
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194439",
+      "42194560",
+      "42194550",
+      "42194659",
+      "42194713",
+      "42194944",
+      "42194955"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Jamal Murray",
+      "Miles Bridges",
+      "Josh Hart",
+      "Coby White",
+      "Keldon Johnson",
+      "Miles McBride",
+      "Steven Adams"
+    ],
+    "positions": [
+      "C",
+      "PG",
+      "PF",
+      "SG",
+      "PG",
+      "SG",
+      "PG",
+      "C"
+    ],
+    "teams": [
+      "DEN",
+      "DEN",
+      "CHA",
+      "NYK",
+      "CHA",
+      "SAS",
+      "NYK",
+      "HOU"
+    ],
+    "salaries": [
+      12500,
+      9100,
+      6400,
+      6500,
+      5200,
+      4300,
+      3000,
+      3000
+    ],
+    "projections": [
+      67.79,
+      46.57,
+      32.9,
+      31.87,
+      30.71,
+      23.68,
+      23.25,
+      21.93
+    ],
+    "total_salary": 50000,
+    "proj_pts": 278.7,
+    "ceiling": 378.58,
+    "proj_own": 40.8,
+    "slot_assignment": {
+      "UTIL": "42194420",
+      "G": "42194439",
+      "PF": "42194560",
+      "F": "42194550",
+      "SG": "42194659",
+      "SF": "42194713",
+      "PG": "42194944",
+      "C": "42194955"
+    },
+    "lineup_num": 11
+  },
+  {
+    "player_ids": [
+      "42194420",
+      "42194424",
+      "42194453",
+      "42194659",
+      "42194944",
+      "42194764",
+      "42194955",
+      "42194803"
+    ],
+    "names": [
+      "Nikola Jokic",
+      "Jaylen Brown",
+      "Deni Avdija",
+      "Coby White",
+      "Miles McBride",
+      "Jordan Poole",
+      "Steven Adams",
+      "Harrison Barnes"
+    ],
+    "positions": [
+      "C",
+      "SG",
+      "SF",
+      "PG",
+      "PG",
+      "PG",
+      "C",
+      "PF"
+    ],
+    "teams": [
+      "DEN",
+      "BOS",
+      "POR",
+      "CHA",
+      "NYK",
+      "NOP",
+      "HOU",
+      "SAS"
+    ],
+    "salaries": [
+      12500,
+      10000,
+      8600,
+      5200,
+      3000,
+      4000,
+      3000,
+      3500
+    ],
+    "projections": [
+      67.79,
+      48.15,
+      43.79,
+      30.71,
+      23.25,
+      22.74,
+      21.93,
+      19.17
+    ],
+    "total_salary": 49800,
+    "proj_pts": 277.53,
+    "ceiling": 376.98,
+    "proj_own": 39.3,
+    "slot_assignment": {
+      "UTIL": "42194420",
+      "SF": "42194424",
+      "PF": "42194453",
+      "SG": "42194659",
+      "PG": "42194944",
+      "G": "42194764",
+      "C": "42194955",
+      "F": "42194803"
+    },
+    "lineup_num": 12
+  },
+  {
+    "player_ids": [
+      "42194424",
+      "42194439",
+      "42194453",
+      "42194574",
+      "42194659",
+      "42194686",
+      "42194955",
+      "42194922"
+    ],
+    "names": [
+      "Jaylen Brown",
+      "Jamal Murray",
+      "Deni Avdija",
+      "Nikola Vucevic",
+      "Coby White",
+      "Julian Champagnie",
+      "Steven Adams",
+      "Caleb Love"
+    ],
+    "positions": [
+      "SG",
+      "PG",
+      "SF",
+      "C",
+      "PG",
+      "SF",
+      "C",
+      "PG"
+    ],
+    "teams": [
+      "BOS",
+      "DEN",
+      "POR",
+      "BOS",
+      "CHA",
+      "SAS",
+      "HOU",
+      "POR"
+    ],
+    "salaries": [
+      10000,
+      9100,
+      8600,
+      6300,
+      5200,
+      4700,
+      3000,
+      3000
+    ],
+    "projections": [
+      48.15,
+      46.57,
+      43.79,
+      36.35,
+      30.71,
+      24.06,
+      21.93,
+      20.08
+    ],
+    "total_salary": 49900,
+    "proj_pts": 271.64,
+    "ceiling": 368.99,
+    "proj_own": 41.7,
+    "slot_assignment": {
+      "F": "42194424",
+      "G": "42194439",
+      "PF": "42194453",
+      "C": "42194574",
+      "PG": "42194659",
+      "SF": "42194686",
+      "UTIL": "42194955",
+      "SG": "42194922"
+    },
+    "lineup_num": 13
+  },
+  {
+    "player_ids": [
+      "42194424",
+      "42194439",
+      "42194453",
+      "42194574",
+      "42194601",
+      "42194764",
+      "42194955",
+      "42194922"
+    ],
+    "names": [
+      "Jaylen Brown",
+      "Jamal Murray",
+      "Deni Avdija",
+      "Nikola Vucevic",
+      "Mikal Bridges",
+      "Jordan Poole",
+      "Steven Adams",
+      "Caleb Love"
+    ],
+    "positions": [
+      "SG",
+      "PG",
+      "SF",
+      "C",
+      "SF",
+      "PG",
+      "C",
+      "PG"
+    ],
+    "teams": [
+      "BOS",
+      "DEN",
+      "POR",
+      "BOS",
+      "NYK",
+      "NOP",
+      "HOU",
+      "POR"
+    ],
+    "salaries": [
+      10000,
+      9100,
+      8600,
+      6300,
+      6000,
+      4000,
+      3000,
+      3000
+    ],
+    "projections": [
+      48.15,
+      46.57,
+      43.79,
+      36.35,
+      31.3,
+      22.74,
+      21.93,
+      20.08
+    ],
+    "total_salary": 50000,
+    "proj_pts": 270.91,
+    "ceiling": 367.98,
+    "proj_own": 41.5,
+    "slot_assignment": {
+      "SF": "42194424",
+      "PG": "42194439",
+      "PF": "42194453",
+      "C": "42194574",
+      "F": "42194601",
+      "G": "42194764",
+      "UTIL": "42194955",
+      "SG": "42194922"
+    },
+    "lineup_num": 14
+  },
+  {
+    "player_ids": [
+      "42194424",
+      "42194453",
+      "42194477",
+      "42194574",
+      "42194601",
+      "42194659",
+      "42194955",
+      "42194922"
+    ],
+    "names": [
+      "Jaylen Brown",
+      "Deni Avdija",
+      "Trey Murphy III",
+      "Nikola Vucevic",
+      "Mikal Bridges",
+      "Coby White",
+      "Steven Adams",
+      "Caleb Love"
+    ],
+    "positions": [
+      "SG",
+      "SF",
+      "PG",
+      "C",
+      "SF",
+      "PG",
+      "C",
+      "PG"
+    ],
+    "teams": [
+      "BOS",
+      "POR",
+      "NOP",
+      "BOS",
+      "NYK",
+      "CHA",
+      "HOU",
+      "POR"
+    ],
+    "salaries": [
+      10000,
+      8600,
+      7800,
+      6300,
+      6000,
+      5200,
+      3000,
+      3000
+    ],
+    "projections": [
+      48.15,
+      43.79,
+      38.11,
+      36.35,
+      31.3,
+      30.71,
+      21.93,
+      20.08
+    ],
+    "total_salary": 49900,
+    "proj_pts": 270.42,
+    "ceiling": 367.32,
+    "proj_own": 42.1,
+    "slot_assignment": {
+      "SF": "42194424",
+      "PF": "42194453",
+      "PG": "42194477",
+      "C": "42194574",
+      "F": "42194601",
+      "G": "42194659",
+      "UTIL": "42194955",
+      "SG": "42194922"
+    },
+    "lineup_num": 15
+  },
+  {
+    "player_ids": [
+      "42194424",
+      "42194439",
+      "42194574",
+      "42194560",
+      "42194601",
+      "42194659",
+      "42194764",
+      "42194922"
+    ],
+    "names": [
+      "Jaylen Brown",
+      "Jamal Murray",
+      "Nikola Vucevic",
+      "Miles Bridges",
+      "Mikal Bridges",
+      "Coby White",
+      "Jordan Poole",
+      "Caleb Love"
+    ],
+    "positions": [
+      "SG",
+      "PG",
+      "C",
+      "PF",
+      "SF",
+      "PG",
+      "PG",
+      "PG"
+    ],
+    "teams": [
+      "BOS",
+      "DEN",
+      "BOS",
+      "CHA",
+      "NYK",
+      "CHA",
+      "NOP",
+      "POR"
+    ],
+    "salaries": [
+      10000,
+      9100,
+      6300,
+      6400,
+      6000,
+      5200,
+      4000,
+      3000
+    ],
+    "projections": [
+      48.15,
+      46.57,
+      36.35,
+      32.9,
+      31.3,
+      30.71,
+      22.74,
+      20.08
+    ],
+    "total_salary": 50000,
+    "proj_pts": 268.8,
+    "ceiling": 365.12,
+    "proj_own": 42.8,
+    "slot_assignment": {
+      "SF": "42194424",
+      "G": "42194439",
+      "C": "42194574",
+      "PF": "42194560",
+      "F": "42194601",
+      "UTIL": "42194659",
+      "SG": "42194764",
+      "PG": "42194922"
+    },
+    "lineup_num": 16
+  },
+  {
+    "player_ids": [
+      "42194439",
+      "42194434",
+      "42194574",
+      "42194508",
+      "42194560",
+      "42194713",
+      "42194764",
+      "42194803"
+    ],
+    "names": [
+      "Jamal Murray",
+      "Alperen Sengun",
+      "Nikola Vucevic",
+      "Stephon Castle",
+      "Miles Bridges",
+      "Keldon Johnson",
+      "Jordan Poole",
+      "Harrison Barnes"
+    ],
+    "positions": [
+      "PG",
+      "C",
+      "C",
+      "SG",
+      "PF",
+      "SG",
+      "PG",
+      "PF"
+    ],
+    "teams": [
+      "DEN",
+      "HOU",
+      "BOS",
+      "SAS",
+      "CHA",
+      "SAS",
+      "NOP",
+      "SAS"
+    ],
+    "salaries": [
+      9100,
+      9400,
+      6300,
+      7000,
+      6400,
+      4300,
+      4000,
+      3500
+    ],
+    "projections": [
+      46.57,
+      46.06,
+      36.35,
+      35.91,
+      32.9,
+      23.68,
+      22.74,
+      19.17
+    ],
+    "total_salary": 50000,
+    "proj_pts": 263.38,
+    "ceiling": 357.77,
+    "proj_own": 43.6,
+    "slot_assignment": {
+      "PG": "42194439",
+      "UTIL": "42194434",
+      "C": "42194574",
+      "SG": "42194508",
+      "PF": "42194560",
+      "SF": "42194713",
+      "G": "42194764",
+      "F": "42194803"
+    },
+    "lineup_num": 17
+  },
+  {
+    "player_ids": [
+      "42194439",
+      "42194574",
+      "42194508",
+      "42194514",
+      "42194560",
+      "42194601",
+      "42194713",
+      "42194764"
+    ],
+    "names": [
+      "Jamal Murray",
+      "Nikola Vucevic",
+      "Stephon Castle",
+      "De'Aaron Fox",
+      "Miles Bridges",
+      "Mikal Bridges",
+      "Keldon Johnson",
+      "Jordan Poole"
+    ],
+    "positions": [
+      "PG",
+      "C",
+      "SG",
+      "PG",
+      "PF",
+      "SF",
+      "SG",
+      "PG"
+    ],
+    "teams": [
+      "DEN",
+      "BOS",
+      "SAS",
+      "SAS",
+      "CHA",
+      "NYK",
+      "SAS",
+      "NOP"
+    ],
+    "salaries": [
+      9100,
+      6300,
+      7000,
+      6800,
+      6400,
+      6000,
+      4300,
+      4000
+    ],
+    "projections": [
+      46.57,
+      36.35,
+      35.91,
+      34.52,
+      32.9,
+      31.3,
+      23.68,
+      22.74
+    ],
+    "total_salary": 49900,
+    "proj_pts": 263.97,
+    "ceiling": 358.57,
+    "proj_own": 44.7,
+    "slot_assignment": {
+      "UTIL": "42194439",
+      "C": "42194574",
+      "SG": "42194508",
+      "PG": "42194514",
+      "PF": "42194560",
+      "F": "42194601",
+      "SF": "42194713",
+      "G": "42194764"
+    },
+    "lineup_num": 18
+  },
+  {
+    "player_ids": [
+      "42194424",
+      "42194439",
+      "42194574",
+      "42194514",
+      "42194601",
+      "42194713",
+      "42194764",
+      "42194803"
+    ],
+    "names": [
+      "Jaylen Brown",
+      "Jamal Murray",
+      "Nikola Vucevic",
+      "De'Aaron Fox",
+      "Mikal Bridges",
+      "Keldon Johnson",
+      "Jordan Poole",
+      "Harrison Barnes"
+    ],
+    "positions": [
+      "SG",
+      "PG",
+      "C",
+      "PG",
+      "SF",
+      "SG",
+      "PG",
+      "PF"
+    ],
+    "teams": [
+      "BOS",
+      "DEN",
+      "BOS",
+      "SAS",
+      "NYK",
+      "SAS",
+      "NOP",
+      "SAS"
+    ],
+    "salaries": [
+      10000,
+      9100,
+      6300,
+      6800,
+      6000,
+      4300,
+      4000,
+      3500
+    ],
+    "projections": [
+      48.15,
+      46.57,
+      36.35,
+      34.52,
+      31.3,
+      23.68,
+      22.74,
+      19.17
+    ],
+    "total_salary": 50000,
+    "proj_pts": 262.48,
+    "ceiling": 356.55,
+    "proj_own": 43.2,
+    "slot_assignment": {
+      "SG": "42194424",
+      "UTIL": "42194439",
+      "C": "42194574",
+      "G": "42194514",
+      "SF": "42194601",
+      "F": "42194713",
+      "PG": "42194764",
+      "PF": "42194803"
+    },
+    "lineup_num": 19
+  },
+  {
+    "player_ids": [
+      "42194439",
+      "42194434",
+      "42194574",
+      "42194560",
+      "42194601",
+      "42194713",
+      "42194696",
+      "42194764"
+    ],
+    "names": [
+      "Jamal Murray",
+      "Alperen Sengun",
+      "Nikola Vucevic",
+      "Miles Bridges",
+      "Mikal Bridges",
+      "Keldon Johnson",
+      "Dylan Harper",
+      "Jordan Poole"
+    ],
+    "positions": [
+      "PG",
+      "C",
+      "C",
+      "PF",
+      "SF",
+      "SG",
+      "PG",
+      "PG"
+    ],
+    "teams": [
+      "DEN",
+      "HOU",
+      "BOS",
+      "CHA",
+      "NYK",
+      "SAS",
+      "SAS",
+      "NOP"
+    ],
+    "salaries": [
+      9100,
+      9400,
+      6300,
+      6400,
+      6000,
+      4300,
+      4500,
+      4000
+    ],
+    "projections": [
+      46.57,
+      46.06,
+      36.35,
+      32.9,
+      31.3,
+      23.68,
+      23.22,
+      22.74
+    ],
+    "total_salary": 50000,
+    "proj_pts": 262.82,
+    "ceiling": 357.01,
+    "proj_own": 43.7,
+    "slot_assignment": {
+      "G": "42194439",
+      "UTIL": "42194434",
+      "C": "42194574",
+      "PF": "42194560",
+      "F": "42194601",
+      "SF": "42194713",
+      "SG": "42194696",
+      "PG": "42194764"
+    },
+    "lineup_num": 20
+  }
+]
