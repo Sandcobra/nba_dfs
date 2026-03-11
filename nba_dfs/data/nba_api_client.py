@@ -17,7 +17,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from nba_api.stats.endpoints import (
     leaguegamefinder,
     playerdashboardbyclutch,
-    playerdashboardbylineups,
     playergamelog,
     playervsplayer,
     leaguedashplayershotlocations,
@@ -26,8 +25,6 @@ from nba_api.stats.endpoints import (
     leaguedashplayerstats,
     leaguedashteamstats,
     leaguedashptstats,
-    teamdashboardbygamesplits,
-    scoreboard,
     boxscoreadvancedv2,
     boxscoresummaryv2,
     teamgamelog,
@@ -36,6 +33,17 @@ from nba_api.stats.endpoints import (
     playbyplayv2,
     hustlestatsboxscore,
 )
+
+# These endpoints may be missing in newer nba_api versions
+try:
+    from nba_api.stats.endpoints import teamdashboardbygamesplits
+except ImportError:
+    teamdashboardbygamesplits = None
+
+try:
+    from nba_api.stats.endpoints import scoreboard
+except ImportError:
+    scoreboard = None
 from nba_api.stats.static import players as static_players, teams as static_teams
 
 from core.config import NBA_API_HEADERS, NBA_API_DELAY_SECS, CACHE_DIR, CURRENT_SEASON
@@ -115,6 +123,9 @@ class NBAApiClient:
     # ── Today's games ──────────────────────────────────────────────────────────
     @retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2))
     def get_todays_scoreboard(self, game_date: Optional[str] = None) -> pd.DataFrame:
+        if scoreboard is None:
+            logger.warning("scoreboard endpoint not available in this nba_api version")
+            return pd.DataFrame()
         _day = game_date or date.today().strftime("%m/%d/%Y")
         _delay()
         sb = scoreboard.Scoreboard(game_date=_day, headers=NBA_API_HEADERS)
@@ -371,23 +382,27 @@ class NBAApiClient:
                          Use 5 for the most granular on/off context.
         """
         _delay()
-        ep = playerdashboardbylineups.PlayerDashboardByLineups(
-            player_id=player_id,
-            season=season or self.season,
-            per_mode_simple="Per36",
-            measure_type_detailed="Base",
-            group_quantity=str(group_quantity),
-            headers=NBA_API_HEADERS,
-            timeout=80,
-        )
-        frames = ep.get_data_frames()
-        # Frame 0 = overall season stats, Frame 1 = lineup breakdown
-        if len(frames) > 1 and not frames[1].empty:
-            return frames[1]
-        # Fallback: scan all frames for one with GROUP_VALUE column
-        for f in frames:
-            if "GROUP_VALUE" in f.columns and not f.empty:
-                return f
+        try:
+            from nba_api.stats.endpoints import playerdashboardbylineups
+            ep = playerdashboardbylineups.PlayerDashboardByLineups(
+                player_id=player_id,
+                season=season or self.season,
+                per_mode_simple="Per36",
+                measure_type_detailed="Base",
+                group_quantity=str(group_quantity),
+                headers=NBA_API_HEADERS,
+                timeout=80,
+            )
+            frames = ep.get_data_frames()
+            # Frame 0 = overall season stats, Frame 1 = lineup breakdown
+            if len(frames) > 1 and not frames[1].empty:
+                return frames[1]
+            # Fallback: scan all frames for one with GROUP_VALUE column
+            for f in frames:
+                if "GROUP_VALUE" in f.columns and not f.empty:
+                    return f
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"playerdashboardbylineups unavailable in nba_api: {e}")
         return pd.DataFrame()
 
     # ── All season game logs (bulk) ────────────────────────────────────────────
