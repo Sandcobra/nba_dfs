@@ -15,6 +15,7 @@ lineups/
 logs/
 *.db
 *.csv
+!contest/*.csv
 
 # IDE
 .vscode/
