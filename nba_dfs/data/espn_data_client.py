@@ -12,6 +12,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -166,6 +167,38 @@ class ESPNDataClient:
             "avg_recent": round(float(recent), 2),
             "avg_season": round(float(season), 2),
             "form_ratio": round(float(ratio), 3) if season else 0.0,
+        }
+
+    def compute_recency_weighted_projection(
+        self,
+        player_name: str,
+        n_recent: int = 5,
+        weight_recent: float = 3.0,
+    ) -> dict:
+        """Compute recency-weighted DK fantasy projection for a player."""
+        df = self.get_player_game_logs(player_name, n_games=25)
+        if df.empty or "fantasy_pts_dk" not in df.columns:
+            return {}
+        pts = df["fantasy_pts_dk"].dropna().values
+        if len(pts) == 0:
+            return {}
+        n_recent = min(n_recent, len(pts))
+        recent = pts[:n_recent]
+        older = pts[n_recent:]
+        recent_avg = float(np.mean(recent))
+        season_avg = float(np.mean(pts))
+        # Weighted average: recent games at weight_recent, older at 1.0
+        weights = [weight_recent] * len(recent) + [1.0] * len(older)
+        weighted_proj = float(np.average(pts[: len(recent) + len(older)], weights=weights[: len(pts)]))
+        form_ratio = recent_avg / season_avg if season_avg > 0 else 1.0
+        return {
+            "weighted_proj": round(weighted_proj, 2),
+            "form_ratio": round(form_ratio, 3),
+            "recent5_avg": round(recent_avg, 2),
+            "season_avg": round(season_avg, 2),
+            "games_played": len(pts),
+            "is_hot": form_ratio > 1.15,
+            "is_cold": form_ratio < 0.85,
         }
 
     # ------------------------------------------------------------- schedules

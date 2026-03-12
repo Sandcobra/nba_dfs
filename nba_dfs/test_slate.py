@@ -23,6 +23,8 @@ import itertools
 from pathlib import Path
 from datetime import date, datetime
 
+from data.espn_data_client import ESPNDataClient
+
 # ── dependency check ─────────────────────────────────────────────────────────
 try:
     import pandas as pd
@@ -105,6 +107,23 @@ NBA_TEAM_NAMES: dict = {
 _VEGAS_CACHE:    dict  = {}
 _VEGAS_CACHE_TS: float = 0.0
 _VEGAS_CACHE_TTL        = 30 * 60   # 30 minutes
+
+_ON_OFF_SPLITS_CACHE: dict | None = None
+
+
+def _load_on_off_splits() -> dict:
+    global _ON_OFF_SPLITS_CACHE
+    if _ON_OFF_SPLITS_CACHE is not None:
+        return _ON_OFF_SPLITS_CACHE
+    path = Path(__file__).parent.parent / "cache" / "on_off_splits.json"
+    if not path.exists():
+        _ON_OFF_SPLITS_CACHE = {}
+        return _ON_OFF_SPLITS_CACHE
+    try:
+        _ON_OFF_SPLITS_CACHE = json.loads(path.read_text())
+    except Exception:
+        _ON_OFF_SPLITS_CACHE = {}
+    return _ON_OFF_SPLITS_CACHE
 
 
 def fetch_vegas_lines(api_key: str = "", player_pool=None) -> dict:
@@ -1874,6 +1893,33 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     # QUESTIONABLE haircut: 15% reduction
     out.loc[out["status"] == "QUESTIONABLE", "proj_pts_dk"] *= 0.85
     out["proj_pts_dk"] = out["proj_pts_dk"].round(2)
+
+    # ESPN recency-weighted projections
+    out["form_ratio"] = 1.0
+    out["is_hot"] = False
+    out["is_cold"] = False
+    recency_upgrades = 0
+    try:
+        espn_client = ESPNDataClient()
+        for idx, row in out.iterrows():
+            player_name = str(row.get("name") or row.get("player_name") or "").strip()
+            if not player_name:
+                continue
+            rec = espn_client.compute_recency_weighted_projection(player_name)
+            if not rec:
+                continue
+            new_proj = rec.get("weighted_proj", out.at[idx, "proj_pts_dk"])
+            out.at[idx, "proj_pts_dk"] = round(float(new_proj), 2)
+            out.at[idx, "form_ratio"] = rec.get("form_ratio", 1.0)
+            out.at[idx, "is_hot"] = bool(rec.get("is_hot", False))
+            out.at[idx, "is_cold"] = bool(rec.get("is_cold", False))
+            recency_upgrades += 1
+        if recency_upgrades:
+            print(f"[projections] ESPN recency weighting applied to {recency_upgrades} players")
+        else:
+            print("[projections] ESPN recency weighting applied to 0 players")
+    except Exception as exc:
+        print(f"[projections] ESPN recency weighting unavailable: {exc}")
 
     # Standard deviation estimate (Gamma-style: ~28% of projection)
     # DEBUT players get wider uncertainty (38%) — unknown minutes/usage
@@ -3999,6 +4045,9 @@ def estimate_usage_absorption(
     guard_positions = {"PG", "SG", "G"}
     big_positions   = {"PF", "C", "F"}
 
+    on_off_splits = _load_on_off_splits()
+    on_off_logs: list[str] = []
+
     # ── Step 1: Determine the OUT player's USG% ───────────────────────────────
     out_usg: float = 0.0
     ud = usage_data or {}
@@ -4065,6 +4114,26 @@ def estimate_usage_absorption(
     for idx_b, row_b in teammates.iterrows():
         tm_pid = str(row_b.get("player_id", ""))
         b_proj = float(df.loc[idx_b, "proj_pts_dk"])
+        b_name_disp = str(row_b.get("name", row_b.get("player_name", tm_pid)))
+        b_name_lower = b_name_disp.lower().strip()
+
+        # Prefer cached ON/OFF uplift when star-specific sample exists
+        split_entry = on_off_splits.get(b_name_lower, {}) if on_off_splits else {}
+        if split_entry and str(split_entry.get("primary_star", "")).lower().strip() == out_name:
+            uplift = float(split_entry.get("uplift_factor", 1.0))
+            new_proj = round(b_proj * uplift, 2)
+            df.loc[idx_b, "proj_pts_dk"] = new_proj
+            df.loc[idx_b, "ceiling"] = round(float(df.loc[idx_b, "ceiling"]) * uplift, 2)
+            df.loc[idx_b, "gpp_score"] = round(
+                df.loc[idx_b, "ceiling"] * 0.60
+                + df.loc[idx_b, "proj_pts_dk"] * 0.25
+                + (1 - float(df.loc[idx_b, "proj_own"]) / 100) * 10,
+                3,
+            )
+            on_off_logs.append(
+                f"[usage] {b_name_disp} adjusted {uplift:.2f}x with {out_player.get('name', out_name.title())} OUT"
+            )
+            continue
 
         # Prefer empirical on/off delta when available and reliable
         if tm_pid and tm_pid in _ood:
@@ -4075,7 +4144,7 @@ def estimate_usage_absorption(
             delta_usg = freed_usg * row_b["_weight"]
 
             # Player efficiency ratio: how many DK pts per 1% of USG
-            b_name = str(row_b.get("name", "")).lower().strip()
+            b_name = b_name_lower
             b_usg  = 20.0  # league avg fallback
             if ud:
                 b_entry = ud.get(b_name)
@@ -4095,6 +4164,10 @@ def estimate_usage_absorption(
             + (1 - float(df.loc[idx_b, "proj_own"]) / 100) * 10,
             3,
         )
+
+    if on_off_logs:
+        for msg in on_off_logs:
+            print(msg)
 
     # ── Step 4: PG playmaker-loss penalty ─────────────────────────────────────
     # When the primary ball-handler is OUT and no backup PG is in the pool,
