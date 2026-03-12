@@ -235,90 +235,72 @@ class DataAgent:
     def _get_player_game_logs(
         self, player_pool: pd.DataFrame, n_games: int = 20
     ) -> dict[int, pd.DataFrame]:
-        """Fetch recent game logs for all players in the pool."""
+        """Fetch recent game logs for all players in pool via ESPN cache."""
+        all_logs = self.espn.get_all_game_logs()  # {name_lower: DataFrame}
         game_logs = {}
-        total = len(player_pool)
-        for i, (_, player) in enumerate(player_pool.iterrows(), 1):
+        matched = 0
+        for _, player in player_pool.iterrows():
             pid  = player.get("player_id") or player.get("ID")
             name = player.get("name", "")
             if not pid:
                 continue
             pid = int(pid)
-            # Check DB cache first
-            cached = self.db.get_game_logs(pid, n_games)
-            if not cached.empty:
-                game_logs[pid] = cached
-                continue
-            # Fetch from NBA API
-            try:
-                df = self.api.get_player_game_log(player_id=pid, n_games=n_games)
-                if not df.empty:
-                    # Compute fantasy points
-                    df["fantasy_pts_dk"] = self.api.compute_dk_fantasy_pts(df)
-                    df["fantasy_pts_fd"] = self.api.compute_fd_fantasy_pts(df)
-                    # Normalize columns
-                    col_map = {
-                        "PTS": "pts", "REB": "reb", "AST": "ast",
-                        "STL": "stl", "BLK": "blk", "TOV": "tov",
-                        "FG3M": "fg3m", "MIN": "min",
-                        "GAME_DATE": "game_date",
-                    }
-                    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-                    df["player_id"] = pid
-                    game_logs[pid] = df
-                    self.db.save_game_logs(df)
-                if i % 10 == 0:
-                    logger.info(f"  Game logs: {i}/{total} players fetched")
-            except Exception as e:
-                logger.debug(f"  Game log fetch failed for {name}: {e}")
-        logger.info(f"Game logs loaded for {len(game_logs)} players")
+            df = self.espn.get_player_game_logs(name, n_games)
+            if not df.empty:
+                df["player_id"] = pid
+                game_logs[pid] = df
+                matched += 1
+        logger.info(f"Game logs loaded for {matched}/{len(player_pool)} players via ESPN cache")
         return game_logs
 
-    def _get_season_player_stats(self) -> pd.DataFrame:
-        try:
-            base = self.api.get_league_player_stats(measure_type="Base", per_mode="PerGame")
-            adv  = self.api.get_league_player_stats(measure_type="Advanced", per_mode="PerGame")
-            if base.empty:
-                return pd.DataFrame()
-            if not adv.empty:
-                df = base.merge(adv, on="PLAYER_ID", suffixes=("", "_adv"))
-            else:
-                df = base
-            return df
-        except Exception as e:
-            logger.warning(f"Season player stats failed: {e}")
+    def _get_season_player_stats(self, game_logs: dict | None = None) -> pd.DataFrame:
+        """Derive season averages from ESPN cached game logs."""
+        if not game_logs:
             return pd.DataFrame()
+        rows = []
+        for pid, df in game_logs.items():
+            if df.empty:
+                continue
+            row = {"player_id": pid}
+            for col in ["pts", "reb", "ast", "stl", "blk", "tov", "min", "fantasy_pts_dk"]:
+                if col in df.columns:
+                    row[col] = df[col].mean()
+            rows.append(row)
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows)
 
     def _get_shot_locations(self) -> pd.DataFrame:
-        try:
-            return self.api.get_player_shot_locations()
-        except Exception as e:
-            logger.warning(f"Shot locations failed: {e}")
-            return pd.DataFrame()
+        return pd.DataFrame()
 
     def _get_team_shot_defense(self, last_n: int = 0) -> pd.DataFrame:
-        try:
-            return self.api.get_team_shot_defense(last_n=last_n)
-        except Exception as e:
-            logger.warning(f"Team shot defense (last {last_n}) failed: {e}")
-            return pd.DataFrame()
+        return pd.DataFrame()
 
     def _get_tracking_stats(self) -> pd.DataFrame:
-        try:
-            return self.api.get_player_tracking_stats("Possessions")
-        except Exception as e:
-            logger.warning(f"Tracking stats failed: {e}")
-            return pd.DataFrame()
+        return pd.DataFrame()
 
     def _get_schedule_for_b2b(self, player_pool: pd.DataFrame) -> pd.DataFrame:
+        """Detect B2B from ESPN game log dates."""
         try:
-            league_log = self.api.get_league_game_log()
-            if "TEAM_ABBREVIATION" in league_log.columns and "GAME_DATE" in league_log.columns:
-                b2b = self.api.detect_back_to_back(league_log)
-                return b2b
+            from datetime import date, timedelta
+            yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+            all_logs = self.espn.get_all_game_logs()
+            b2b_teams = set()
+            for name, df in all_logs.items():
+                if df.empty or "game_date" not in df.columns:
+                    continue
+                dates = pd.to_datetime(df["game_date"], errors="coerce").dropna()
+                if any(d.strftime("%Y-%m-%d") == yesterday for d in dates):
+                    team = df["team"].iloc[-1] if "team" in df.columns else None
+                    if team:
+                        b2b_teams.add(team)
+            if b2b_teams:
+                logger.info(f"B2B teams detected: {b2b_teams}")
+            rows = [{"TEAM_ABBREVIATION": t, "B2B": True} for t in b2b_teams]
+            return pd.DataFrame(rows) if rows else pd.DataFrame()
         except Exception as e:
             logger.warning(f"B2B detection failed: {e}")
-        return pd.DataFrame()
+            return pd.DataFrame()
 
     # ── Enrichment ─────────────────────────────────────────────────────────────
     def _enrich_player_pool(
