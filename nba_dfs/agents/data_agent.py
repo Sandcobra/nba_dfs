@@ -76,7 +76,7 @@ class DataAgent:
         tracking_df = pd.DataFrame()
 
         # 10. B2B detection
-        schedule_df = self._get_schedule_for_b2b(player_pool, today)
+        schedule_df = self._get_schedule_for_b2b(player_pool)
 
         # 11. Enrich player pool with all context
         enriched_pool = self._enrich_player_pool(
@@ -95,9 +95,15 @@ class DataAgent:
             schedule_df=schedule_df,
         )
 
-        # 12. Save to DB
-        self.db.save_vegas_lines(vegas_df) if not vegas_df.empty else None
-        self.db.save_injury_report(injuries_df.to_dict("records")) if not injuries_df.empty else None
+        # 12. Save to DB (non-fatal)
+        try:
+            self.db.save_vegas_lines(vegas_df) if not vegas_df.empty else None
+        except Exception as e:
+            logger.debug(f"Vegas lines DB save skipped: {e}")
+        try:
+            self.db.save_injury_report(injuries_df.to_dict("records")) if not injuries_df.empty else None
+        except Exception as e:
+            logger.debug(f"Injury report DB save skipped: {e}")
 
         logger.success("Slate data build complete")
 

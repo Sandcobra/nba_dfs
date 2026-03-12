@@ -208,7 +208,7 @@ class ESPNDataClient:
         if not entries:
             return None
         if team:
-            team = team.upper()
+            team = str(team).upper() if team else None
             for entry in entries:
                 if entry.get("team") == team:
                     return entry

@@ -72,7 +72,7 @@ class OwnershipModel:
         feat["team_implied_total"] = df.get("team_implied_total", 112.5)
         feat["b2b"]              = df.get("b2b", 0).astype(int)
         feat["days_rest"]        = df.get("days_rest", 2)
-        feat["home_away"]        = (df.get("home_away", "home") == "home").astype(int)
+        feat["home_away"]        = pd.Series(df.get("home_away", pd.Series(["home"]*len(df))), index=df.index).eq("home").astype(int)
         feat["is_game_time_decision"] = (
             df.get("injury_status", "ACTIVE").isin(["GTD", "QUESTIONABLE"])
         ).astype(int)

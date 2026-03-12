@@ -253,8 +253,16 @@ class Database:
             return pd.read_sql_query(sql, conn, params=(today,))
 
     def save_vegas_lines(self, df: pd.DataFrame):
-        with self._conn() as conn:
-            df.to_sql("vegas_lines", conn, if_exists="append", index=False)
+        try:
+            with self._conn() as conn:
+                df.to_sql("vegas_lines", conn, if_exists="append", index=False)
+        except Exception as e:
+            # Schema mismatch — recreate table with current columns
+            try:
+                with self._conn() as conn:
+                    df.to_sql("vegas_lines", conn, if_exists="replace", index=False)
+            except Exception:
+                pass  # Non-fatal — vegas lines are optional
 
     def get_vegas_lines(self, slate_date: str) -> pd.DataFrame:
         sql = "SELECT * FROM vegas_lines WHERE slate_date = ?"
