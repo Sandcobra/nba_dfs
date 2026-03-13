@@ -1890,6 +1890,65 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         out.loc[out["status"] == "DEBUT", "proj_pts_dk"] * 0.38
     ).round(2)
 
+    # ── Explosion Profile Signals ─────────────────────────────────────────────
+    # Four signals that predict 2-3x performance probability:
+    #
+    #   1. boom_rate       — historical P(dk >= 1.8x avg). Malik Monk at $4,500
+    #                        has a measurably higher boom rate than a similar-priced
+    #                        consistent player. Inflates ceiling for GPP targeting.
+    #
+    #   2. variance_ratio  — recent_std / season_std. > 1.3 = player is in a
+    #                        "volatile" phase (could boom or bust). For GPP we
+    #                        want this at the cheap tier.
+    #
+    #   3. game_env_mult   — pace × game_total interaction. High-pace + high-total
+    #                        games generate more possessions → more counting stats
+    #                        → higher ceiling for all players in that game.
+    #
+    #   4. salary_gap      — ceiling - (salary/1000 × 5). Positive = underpriced
+    #                        relative to market expectation. Large gaps identify
+    #                        players like Raynaud ($6,300, ceil=64, gap=+32.5).
+    out["boom_rate"]      = 0.05   # baseline: 5% boom games (league average)
+    out["variance_ratio"] = 1.0
+    out["is_volatile"]    = False
+    out["game_env_mult"]  = 1.0
+
+    # 1 & 2: boom_rate + variance_ratio from ESPN game logs
+    try:
+        _exp_client = ESPNDataClient()
+        boom_hits   = 0
+        LG_PACE_EST = 100.0
+        for idx, row in out.iterrows():
+            player_name = str(row.get("name") or row.get("player_name") or "").strip()
+            if not player_name:
+                continue
+            profile = _exp_client.compute_explosion_profile(player_name)
+            if not profile:
+                continue
+            out.at[idx, "boom_rate"]      = profile["boom_rate"]
+            out.at[idx, "variance_ratio"] = profile["variance_ratio"]
+            out.at[idx, "is_volatile"]    = bool(profile["is_volatile"])
+            boom_hits += 1
+        print(f"[projections] Explosion profiles computed for {boom_hits} players")
+    except Exception as _exc:
+        print(f"[projections] Explosion profiles unavailable: {_exc}")
+
+    # 3: game_env_mult — pace × game_total interaction per matchup
+    # Normalised to 1.0 at league-average (pace=100, total=225).
+    # Max boost ≈ 8% for a pace-110 / total-240 game.
+    LG_TOTAL = 225.0
+    LG_PACE  = 100.0
+    for matchup in out["matchup"].unique():
+        gt   = GAME_TOTALS.get(matchup, {})
+        tot  = float(gt.get("total", LG_TOTAL))
+        # Derive pace from away/home implied: higher implied totals → higher pace
+        # (proxy: use implied ratio since we don't always have real pace here)
+        pace = (tot / LG_TOTAL) * LG_PACE   # approximate; overridden by enrich_projections
+        total_factor = (tot  / LG_TOTAL - 1.0) * 0.50   # 50% weight on game total
+        pace_factor  = (pace / LG_PACE  - 1.0) * 0.30   # 30% weight on pace
+        env_mult     = float(np.clip(1.0 + total_factor + pace_factor, 0.92, 1.10))
+        out.loc[out["matchup"] == matchup, "game_env_mult"] = env_mult
+
     # ── Tournament ceiling: salary-tiered fat-tail multipliers ────────────────
     # Backtest (4 nights 3/6–3/9) calibration:
     #   Jaylin Williams  ($5700,  proj=20.4, actual=57.0) → 2.80x
@@ -1906,19 +1965,45 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         ( 5_000, 2.80, 40),   # Value: $5-6.5K → 2.80x, max +40 pts
         (     0, 3.20, 40),   # Cheap: <$5K → 3.20x, max +40 pts
     ]
-    def _get_ceiling(proj, salary):
+    def _get_ceiling(proj, salary, boom_rate=0.05, game_env_mult=1.0):
+        # Base ceiling from salary tier
+        base = proj
         for sal_thresh, mult, max_add in _CEIL_TIERS:
             if salary >= sal_thresh:
-                return round(min(proj * mult, proj + max_add), 2)
-        return round(proj * 3.20, 2)
+                base = min(proj * mult, proj + max_add)
+                break
+        else:
+            base = proj * 3.20
+
+        # Boom-rate inflation: players with high explosion history get wider ceiling.
+        # boom_rate=0.20 → +10% ceiling. Capped at +15% to avoid overcorrection.
+        boom_inflation = float(np.clip(boom_rate * 0.50, 0.0, 0.15))
+
+        # Game environment multiplier: high-pace / high-total games expand ceilings.
+        # Already normalised to 1.0 at league average. Additional contribution
+        # beyond 1.0 is applied at 60% weight (partial — game context is shared).
+        env_inflation = float(np.clip((game_env_mult - 1.0) * 0.60, -0.05, 0.08))
+
+        return round(base * (1.0 + boom_inflation + env_inflation), 2)
 
     out["ceiling"] = out.apply(
-        lambda r: _get_ceiling(r["proj_pts_dk"], r["salary"]), axis=1
+        lambda r: _get_ceiling(
+            r["proj_pts_dk"], r["salary"],
+            r.get("boom_rate", 0.05),
+            r.get("game_env_mult", 1.0),
+        ),
+        axis=1,
     )
-    out["floor"]   = (out["proj_pts_dk"] - 1.28 * out["proj_std"]).clip(0).round(2)
+    out["floor"] = (out["proj_pts_dk"] - 1.28 * out["proj_std"]).clip(0).round(2)
 
     # Value metric
     out["value"] = (out["proj_pts_dk"] / (out["salary"] / 1000)).round(3)
+
+    # Salary inefficiency gap — positive = underpriced vs market expectation.
+    # Market baseline: salary/1000 × 5 is the implied DK expectation at 5x value.
+    # Large positive gaps (e.g. Raynaud $6,300 ceil=64 → gap=+32.5) flag players
+    # the optimizer should weight more heavily in GPP builds.
+    out["salary_gap"] = (out["ceiling"] - out["salary"] / 1000.0 * 5.0).round(2)
 
     # ── ON/OFF Injury Usage Absorption ───────────────────────────────────────
     # For every player the DK slate marks as OUT (or confirmed injured in injury
@@ -2057,14 +2142,27 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     play_prob = (1.0 - out["dnp_risk"])
     value_ceil_per_k = out["ceiling"] / (out["salary"] / 1000.0)
     value_bonus = (value_ceil_per_k - 4.0).clip(0, 10) * 0.60
+
+    # Salary gap bonus: rewards structurally underpriced players.
+    # salary_gap = ceiling - (salary/1000 * 5).  Normalised: cap at 15pts gap → +1.5 pts.
+    gap_bonus = out["salary_gap"].clip(0, 30) * 0.05
+
+    # Volatile bonus: players in variance-expansion phase get a small GPP lift.
+    # Only applied at cheap/mid tiers where variance translates to GPP edge.
+    vol_bonus = (
+        (out["variance_ratio"] - 1.0).clip(0, 1.0) * 0.8 *
+        (out["salary"] < 7500).astype(float)   # only cheap/mid tier
+    )
+
     out["gpp_score"] = (
         out["ceiling"]     * 0.50 * play_prob +
         out["proj_pts_dk"] * 0.15 * play_prob +
         (1 - out["proj_own"] / 100) * 8 +
-        value_bonus * play_prob
+        value_bonus  * play_prob +
+        gap_bonus    * play_prob +
+        vol_bonus    * play_prob
     ).round(3)
-    # DNP penalty for very-high-risk plays (>30%) — they still get penalized
-    # but less harshly since value bonus already partially offsets DNP risk
+    # DNP penalty for very-high-risk plays (>30%)
     high_risk = out["dnp_risk"] >= 0.30
     out.loc[high_risk, "gpp_score"] = (out.loc[high_risk, "gpp_score"] * 0.85).round(3)
 
