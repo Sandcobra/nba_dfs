@@ -5392,26 +5392,50 @@ def main():
     raw = parse_salary_file(SALARY_FILE)
     print(f"Loaded {len(raw)} players from {SALARY_FILE.name}")
 
-    # 2. Project
+    # 2. Fetch live injury data (ESPN scraper -- free, no API key needed)
+    injury_status_map: dict = {}
+    try:
+        from data.injury_scraper import InjuryScraper
+        _sc = InjuryScraper()
+        _records = _sc.scrape_espn()
+        _sc.close()
+        for rec in _records:
+            injury_status_map[rec["name"]] = rec["status"]
+        out_ct = sum(1 for s in injury_status_map.values() if s == "OUT")
+        gtd_ct = sum(1 for s in injury_status_map.values() if s in ("GTD", "QUESTIONABLE", "DOUBTFUL"))
+        print(f"Injury report loaded: {out_ct} OUT, {gtd_ct} GTD/Questionable")
+    except Exception as _e:
+        print(f"[warn] Injury scraper failed: {_e} -- using salary-tier DNP estimates only")
+
+    # 3. Project
     players = build_projections(raw)
     # Remove OUT players (avg=0 AND salary low) and players already flagged
     players = players[players["proj_pts_dk"] > 0].copy()
-    # Hard filter: remove high-DNP-risk players (>= 35%) from optimizer pool.
-    # These players hurt more than help — a DNP destroys an entire lineup slot.
+
+    # Apply live injury statuses: OUT players dropped, GTD/QUESTIONABLE get projection cuts
+    if injury_status_map:
+        pre_inj = len(players)
+        players = apply_status_updates(players, injury_status_map)
+        dropped = pre_inj - len(players)
+        if dropped:
+            print(f"Live injury update: {dropped} OUT players removed from pool")
+
+    # Hard filter: remove remaining high-DNP-risk players (>= 35%) from optimizer pool.
+    # These players hurt more than help -- a DNP destroys an entire lineup slot.
     # Players with 12-25% risk stay in (meaningful upside if they play).
     if "dnp_risk" in players.columns:
         pre_dnp = len(players)
         players = players[players["dnp_risk"] < 0.35].copy()
         removed = pre_dnp - len(players)
         if removed:
-            print(f"Removed {removed} players with DNP risk >= 35% from optimizer pool")
+            print(f"Removed {removed} players with salary-tier DNP risk >= 35%")
     print(f"After filtering: {len(players)} eligible players")
 
-    # 3. Slate analysis
+    # 4. Slate analysis
     print_slate_analysis(players)
     print_strategy()
 
-    # 4. Generate lineups
+    # 5. Generate lineups
     lineups = generate_gpp_lineups(
         players,
         n=NUM_LINEUPS,

@@ -104,11 +104,13 @@ class InjuryScraper:
                 if len(cols) < 4:
                     continue
                 try:
+                    # ESPN columns: NAME, POS, EST.RETURN DATE, STATUS, COMMENT
                     records.append({
                         "name":        cols[0].get_text(strip=True),
                         "team":        team_name,
-                        "status":      _normalize_status(cols[2].get_text(strip=True)),
-                        "reason":      cols[1].get_text(strip=True),
+                        "status":      _normalize_status(cols[3].get_text(strip=True)) if len(cols) > 3 else "UNKNOWN",
+                        "reason":      cols[4].get_text(strip=True) if len(cols) > 4 else cols[1].get_text(strip=True),
+                        "return_date": cols[2].get_text(strip=True) if len(cols) > 2 else "",
                         "source":      "espn",
                         "reported_at": datetime.utcnow().isoformat(),
                     })
