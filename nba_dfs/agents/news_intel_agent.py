@@ -267,21 +267,25 @@ class NewsIntelAgent:
             return self._x_client
         try:
             import tweepy
+        except ImportError:
+            self._x_stats["error"] = "tweepy not installed on this server -- run: pip install tweepy"
+            logger.warning("[news] tweepy not installed")
+            return None
+        try:
             try:
                 from core.config import X_BEARER_TOKEN
             except ImportError:
                 from nba_dfs.core.config import X_BEARER_TOKEN
             if not X_BEARER_TOKEN:
+                self._x_stats["error"] = "X_BEARER_TOKEN missing -- add it to .env on the server"
                 return None
             self._x_client = tweepy.Client(
                 bearer_token=X_BEARER_TOKEN,
                 wait_on_rate_limit=False,
             )
             return self._x_client
-        except ImportError:
-            logger.warning("[news] tweepy not installed — X beat writer feed disabled. Run: pip install tweepy")
-            return None
         except Exception as exc:
+            self._x_stats["error"] = f"X client init failed: {exc}"
             logger.warning("[news] X client init failed: %s", exc)
             return None
 
