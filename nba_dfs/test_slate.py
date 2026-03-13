@@ -5431,6 +5431,39 @@ def main():
             print(f"Removed {removed} players with salary-tier DNP risk >= 35%")
     print(f"After filtering: {len(players)} eligible players")
 
+    # 3b. X beat writer news intel -- applies projection multipliers from live tweets
+    # (STARTING_REPLACEMENT x1.28, SCRATCHED x0.00, MINUTES_BOOST x1.10, etc.)
+    try:
+        from agents.news_intel_agent import NewsIntelAgent
+        _nia = NewsIntelAgent()
+        _intel = _nia.analyze(players)
+        players, _excluded_pids = _nia.apply_to_players(players, _intel["impacts"])
+        if _excluded_pids:
+            players = players[~players["player_id"].astype(str).isin(_excluded_pids)].copy()
+            print(f"  News intel excluded {len(_excluded_pids)} players (SCRATCHED/DNP signals)")
+        _nia.close()
+        _xst = _intel.get("x_stats", {})
+        total_signals = len(_intel.get("signals", []))
+        print("\n--- NEWS INTEL ---")
+        if _xst.get("enabled"):
+            print(f"  X (Twitter): OK -- {_xst['handles_queried']} writers queried, "
+                  f"{_xst['tweets_retrieved']} tweets, {_xst['signals_from_x']} signals")
+        else:
+            _xerr = _xst.get("error") or "X_BEARER_TOKEN not set or API disabled"
+            print(f"  X (Twitter): DISABLED -- {_xerr}")
+        print(f"  Total signals: {total_signals} across all sources")
+        if _intel.get("player_news"):
+            _pid_to_name = players.set_index("player_id")["name"].to_dict() if "player_id" in players.columns else {}
+            for _pid, news_list in list(_intel["player_news"].items())[:8]:
+                _pname = _pid_to_name.get(_pid, _pid_to_name.get(int(_pid) if str(_pid).isdigit() else _pid, str(_pid)))
+                _sig = news_list[0]["signal"]
+                _src = news_list[0].get("source", "?")
+                _txt = news_list[0].get("text", "")[:70]
+                print(f"  {_pname:<26s} {_sig:<24s} [{_src}] {_txt}")
+        print("------------------\n")
+    except Exception as _e:
+        print(f"[warn] News intel agent failed: {_e} -- proceeding without X signals")
+
     # 4. Slate analysis
     print_slate_analysis(players)
     print_strategy()
