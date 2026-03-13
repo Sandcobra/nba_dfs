@@ -2301,6 +2301,7 @@ def build_lineup(
     correlation_bonus: float = 2.5,
     min_proj_total: float = None,
     base_proj_vals: "np.ndarray | None" = None,
+    max_premium_players: int = 3,    # max players with salary >= $9K (forces salary balance)
 ) -> dict | None:
     """
     ILP lineup optimizer.
@@ -2449,6 +2450,14 @@ def build_lineup(
             prob += pulp.lpSum(x[i] for i in stud_idx) >= _stud_min
         if len(cheap_idx) >= _cheap_min and _cheap_min > 0:
             prob += pulp.lpSum(x[i] for i in cheap_idx) >= _cheap_min
+
+    # Salary-tier balance: cap number of premium-salary ($9K+) players.
+    # Prevents optimizer from packing 4+ studs which leaves only $3K filler slots,
+    # blocking out $4-7K value plays with higher GPP scores (e.g. Rayan Rupert $4K).
+    if max_premium_players is not None and max_premium_players > 0:
+        premium_idx = [i for i in idx if sals[i] >= 9000]
+        if len(premium_idx) > max_premium_players:
+            prob += pulp.lpSum(x[i] for i in premium_idx) <= max_premium_players
 
     # Locks
     if locked_ids:
@@ -3155,7 +3164,7 @@ def generate_gpp_lineups(
                 prev_lineups=prev_pids[-3:] if prev_pids else None,
                 min_unique=1,
                 locked_ids=list(locked_ids or []),
-                excluded_ids=list(excluded_ids or []),
+                excluded_ids=curr_excl,          # respect exposure cap in fallback
                 ownership_penalty=0.02,
                 stack_game=stack_game,
                 stack_bonus=0.20,
@@ -3167,18 +3176,19 @@ def generate_gpp_lineups(
             )
 
         if result is None:
+            # Last resort: drop diversity + stack, but still respect exposure cap
             result = build_lineup(
                 players_sample,
                 objective_col="gpp_score",
                 prev_lineups=None,
                 min_unique=0,
                 locked_ids=locked_ids,
-                excluded_ids=list(excluded_ids or []),
+                excluded_ids=curr_excl,          # respect exposure cap even last resort
                 ownership_penalty=0.0,
                 stack_game=None,
                 barbell_params=None,
                 correlation_pairs=_corr_pairs,
-                min_proj_total=None,        # last resort: drop floor too
+                min_proj_total=None,
                 base_proj_vals=_base_proj,
             )
 
@@ -5375,6 +5385,15 @@ def main():
     players = build_projections(raw)
     # Remove OUT players (avg=0 AND salary low) and players already flagged
     players = players[players["proj_pts_dk"] > 0].copy()
+    # Hard filter: remove high-DNP-risk players (>= 35%) from optimizer pool.
+    # These players hurt more than help — a DNP destroys an entire lineup slot.
+    # Players with 12-25% risk stay in (meaningful upside if they play).
+    if "dnp_risk" in players.columns:
+        pre_dnp = len(players)
+        players = players[players["dnp_risk"] < 0.35].copy()
+        removed = pre_dnp - len(players)
+        if removed:
+            print(f"Removed {removed} players with DNP risk >= 35% from optimizer pool")
     print(f"After filtering: {len(players)} eligible players")
 
     # 3. Slate analysis
@@ -5410,6 +5429,9 @@ def main():
         "avg_pts", "proj_pts_dk", "ceiling", "floor",
         "value", "proj_own", "gpp_score", "matchup", "game_total",
     ]
+    for _sig in ["boom_rate", "variance_ratio", "is_volatile", "game_env_mult", "salary_gap", "on_off_boost"]:
+        if _sig in players.columns:
+            proj_cols.append(_sig)
     if "dnp_risk" in players.columns:
         proj_cols.append("dnp_risk")
     players[proj_cols].to_csv(proj_path, index=False)
