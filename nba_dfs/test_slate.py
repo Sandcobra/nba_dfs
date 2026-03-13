@@ -2053,7 +2053,7 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
                 boost = (out["proj_pts_dk"] - before).clip(lower=0)
                 out["on_off_boost"] = (out["on_off_boost"] + boost).round(2)
                 n_boosted = int((boost > 0.1).sum())
-                print(f"[on_off] {out_row.get('name','?')} OUT → {n_boosted} teammates boosted")
+                print(f"[on_off] {out_row.get('name','?')} OUT -> {n_boosted} teammates boosted")
 
     except Exception as _exc:
         import logging
@@ -2995,11 +2995,22 @@ def generate_gpp_lineups(
     # stack_score = combined_proj × (1 + 0.15 × avg_corr), then derive
     # stack cycling order from the top stacks' matchups.
     # Falls back to O/U ordering when the model is unavailable.
-    stack_games = [
-        matchup for matchup, _ in sorted(
-            GAME_TOTALS.items(), key=lambda kv: -kv[1]["total"]
+    # Build stack_games from actual slate matchups (sorted by game_total descending).
+    # Using GAME_TOTALS directly caused wrong games when the slate differs from the
+    # hardcoded dict (e.g. running a 3/9 slate with 3/6 GAME_TOTALS hardcoded).
+    if "matchup" in players.columns and "game_total" in players.columns:
+        _matchup_totals = (
+            players[["matchup", "game_total"]].dropna()
+            .groupby("matchup")["game_total"].first()
+            .sort_values(ascending=False)
         )
-    ]
+        stack_games = list(_matchup_totals.index)
+    else:
+        stack_games = [
+            matchup for matchup, _ in sorted(
+                GAME_TOTALS.items(), key=lambda kv: -kv[1]["total"]
+            )
+        ]
     _corr_pairs: dict = {}   # populated below; initialized here so try-block enrichment can write to it
     try:
         from nba_dfs.models.correlation_model import CorrelationModel as _CorrModel
@@ -3193,7 +3204,7 @@ def generate_gpp_lineups(
             )
 
         if result is None:
-            print(f"  Lineup {lu_num+1}: INFEASIBLE — skipping")
+            print(f"  Lineup {lu_num+1}: INFEASIBLE -- skipping")
             continue
 
         # Attach metadata using ORIGINAL (non-sampled) player pool for
@@ -3337,9 +3348,9 @@ def generate_gpp_lineups(
     # When pool_size > n we generated a large pool and now greedily select
     # the best n by maximising score + leverage while enforcing diversity.
     if pool_size and pool_size > n and len(lineups) > n:
-        print(f"\n[pool] Selecting best {n} from {len(lineups)}-lineup pool…")
+        print(f"\n[pool] Selecting best {n} from {len(lineups)}-lineup pool...")
         lineups = select_portfolio(lineups, n, players)
-        print(f"[pool] Portfolio selection complete — {len(lineups)} lineups")
+        print(f"[pool] Portfolio selection complete -- {len(lineups)} lineups")
 
     # ── Final exposure audit ───────────────────────────────────────────────
     # Hard confirmation: after all post-processing, verify no player exceeds cap.
@@ -3560,7 +3571,7 @@ def run_postmortem(
         print(f"\n  UNDER-EXPOSED STARS (scored 55+, <{max(1, n_ours//5)} lineups):")
         for p, (cnt, sc) in sorted(underexposed.items(), key=lambda x: -x[1][1]):
             own = player_own.get(p, 0)
-            print(f"    {p}: {sc:.1f} pts  — in {cnt}/{n_ours} lineups ({own:.1f}% field own)")
+            print(f"    {p}: {sc:.1f} pts  -- in {cnt}/{n_ours} lineups ({own:.1f}% field own)")
 
     print(f"\n  WINNING LINEUP ({winner['pts']:.2f} pts):")
     for pname in winner_names:
@@ -4560,7 +4571,7 @@ def find_top_stacks(players: pd.DataFrame) -> list:
 # ── Slate analysis printout ───────────────────────────────────────────────────
 def print_slate_analysis(players: pd.DataFrame):
     print("\n" + "="*70)
-    print(f"SLATE ANALYSIS — {date.today().isoformat()}")
+    print(f"SLATE ANALYSIS -- {date.today().isoformat()}")
     print(f"Contest: {CONTEST['name']} | ${CONTEST['entry_fee']} entry | "
           f"Max {CONTEST['max_entries']} entries")
     print("="*70)
@@ -4570,7 +4581,7 @@ def print_slate_analysis(players: pd.DataFrame):
     # Flags
     zero_avg = players[players["avg_pts"] <= 5].copy()
     if not zero_avg.empty:
-        print(f"\nPLAYERS WITH 0 OR VERY LOW AVG — LIKELY OUT / INJURED:")
+        print(f"\nPLAYERS WITH 0 OR VERY LOW AVG -- LIKELY OUT / INJURED:")
         for _, r in zero_avg.iterrows():
             flag = "LIKELY OUT" if r["avg_pts"] == 0 else "low avg"
             print(f"  {r['name']:<30s} ${r['salary']:,}  avg={r['avg_pts']}  [{flag}]")
@@ -4597,7 +4608,7 @@ def print_slate_analysis(players: pd.DataFrame):
 
     print(f"\nTOP STACKS BY GAME TOTAL:")
     for s in find_top_stacks(players)[:6]:
-        print(f"  [{s['team']}] {s['game']} (O/U {s['game_total']}) — "
+        print(f"  [{s['team']}] {s['game']} (O/U {s['game_total']}) -- "
               f"{', '.join(s['players'][:3])}  Combined: {s['proj']:.1f} pts")
 
 
@@ -5368,7 +5379,7 @@ def late_swap_lineups(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    print("NBA DFS Model — Slate Test Runner")
+    print("NBA DFS Model -- Slate Test Runner")
     print(f"Loading: {SALARY_FILE}")
     print("-" * 60)
 
@@ -5451,7 +5462,7 @@ def main():
     print("  " + "-"*45)
     exp_df = exposure_report(lineups, len(lineups))
     for _, r in exp_df.iterrows():
-        bar = "█" * int(r["exposure_pct"] / 5)
+        bar = "|" * int(r["exposure_pct"] / 5)
         print(f"  {r['player']:<28s} {r['count']:>4d}x  {r['exposure_pct']:>6.1f}%  {bar}")
 
     # 9. Summary
@@ -5481,7 +5492,7 @@ def main():
         _result_files = sorted(contest_dir.glob("contest-results_*.csv"), reverse=True)
         if _result_files:
             _latest = _result_files[0]
-            print(f"\n[postmortem] Found results: {_latest.name} — running diagnostic…")
+            print(f"\n[postmortem] Found results: {_latest.name} -- running diagnostic...")
             run_postmortem(
                 contest_csv=_latest,
                 our_username="Sandcobra",  # DK username
