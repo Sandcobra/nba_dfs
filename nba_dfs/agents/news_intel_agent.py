@@ -569,6 +569,7 @@ class NewsIntelAgent:
         return items
 
     def _fetch_espn_news(self) -> list[dict]:
+        # ESPN injury table columns: NAME | POS | EST.RETURN | STATUS | COMMENT
         resp = self._client.get("https://www.espn.com/nba/injuries")
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -578,11 +579,17 @@ class NewsIntelAgent:
                 cols = row.select("td")
                 if len(cols) < 4:
                     continue
-                name_el   = cols[0]
-                comment_el = cols[3] if len(cols) > 3 else cols[-1]
+                name    = cols[0].get_text(strip=True)
+                status  = cols[3].get_text(strip=True) if len(cols) > 3 else ""
+                comment = cols[4].get_text(strip=True) if len(cols) > 4 else ""
+                # Use comment as primary text; fall back to status so regex has something
+                text = comment if comment else status
+                if not name or not text:
+                    continue
                 items.append({
-                    "name":        name_el.get_text(strip=True),
-                    "text":        comment_el.get_text(strip=True),
+                    "name":        name,
+                    "text":        text,
+                    "status":      status,   # raw ESPN status for direct signal mapping
                     "source":      "espn",
                     "reported_at": datetime.utcnow().isoformat(),
                 })
@@ -669,8 +676,17 @@ class NewsIntelAgent:
             if not pid:
                 continue
 
-            # Classify signal
-            signal_type = self._classify(text)
+            # Direct status → signal mapping (ESPN/injury scrapers provide raw status field)
+            raw_status = item.get("status", "").upper().strip()
+            _STATUS_MAP = {
+                "OUT": "SCRATCHED",
+                "DOUBTFUL": "SCRATCHED",
+                "QUESTIONABLE": "GAME_TIME_DECISION",
+                "GTD": "GAME_TIME_DECISION",
+                "DAY-TO-DAY": "GAME_TIME_DECISION",
+                "PROBABLE": "GAME_TIME_DECISION",
+            }
+            signal_type = _STATUS_MAP.get(raw_status) or self._classify(text)
             if signal_type is None:
                 continue
 
