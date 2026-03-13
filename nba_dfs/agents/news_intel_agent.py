@@ -458,7 +458,7 @@ class NewsIntelAgent:
 
         # Build query: (from:writer1 OR from:writer2 ...) -is:retweet lang:en
         # X API allows up to 512 chars in query; chunk if needed
-        chunks = self._chunk_handles(X_BEAT_WRITER_HANDLES, max_per_chunk=25)
+        chunks = self._chunk_handles(X_BEAT_WRITER_HANDLES, max_per_chunk=12)
         items: list[dict] = []
         total_tweets = 0
 
