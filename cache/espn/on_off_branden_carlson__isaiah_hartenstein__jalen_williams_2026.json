@@ -1,9 +1,9 @@
 {
-  "42221376": {
-    "delta_dk": 3.1,
+  "42261473": {
+    "delta_dk": 2.99,
     "dk_with": 28.02,
-    "dk_without": 31.12,
+    "dk_without": 31.01,
     "min_with": 19,
-    "min_without": 31
+    "min_without": 32
   }
 }
