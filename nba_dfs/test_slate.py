@@ -748,11 +748,14 @@ _USAGE_CACHE_TS: dict = {}
 
 def fetch_player_usage_rates(season: str = "2025-26") -> dict:
     """
-    Fetch real USG% and minutes-per-game for every player from NBA Stats.
+    ESPN-based USG% and minutes-per-game for every player.
 
-    Endpoint: leaguedashplayerstats?MeasureType=Usage
+    stats.nba.com is IP-blocked. This function uses BBRefOnOffAgent (ESPN game
+    logs) to compute USG% from FGA + 0.44*FTA + TOV across each player's last
+    15 games.  Falls back to salary-proxy inside estimate_usage_absorption()
+    when ESPN data is unavailable for a player.
+
     Returns: {player_name_lower: {"usg_pct": float, "min_pg": float, "team": str}}
-
     Cached for 6 hours.
     """
     import time, logging
@@ -760,65 +763,24 @@ def fetch_player_usage_rates(season: str = "2025-26") -> dict:
     if season in _USAGE_CACHE and (now - _USAGE_CACHE_TS.get(season, 0)) < 21600:
         return _USAGE_CACHE[season]
 
-    url = "https://stats.nba.com/stats/leaguedashplayerstats"
-    params = {
-        **_COMMON_PARAMS,
-        "Season":          season,
-        "MeasureType":     "Usage",
-        "PerMode":         "PerGame",
-        "PlusMinus":       "N",
-        "Rank":            "N",
-        "PaceAdjust":      "N",
-        "PlayerExperience": "",
-        "PlayerPosition":   "",
-        "StarterBench":     "",
-        "TwoWay":           "0",
-        "DraftYear":        "",
-        "DraftPick":        "",
-        "College":          "",
-        "Country":          "",
-        "Height":           "",
-        "Weight":           "",
-    }
     try:
-        import requests as _req
-        resp = _req.get(url, headers=_NBA_HEADERS, params=params, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-        headers_row = data["resultSets"][0]["headers"]
-        rows        = data["resultSets"][0]["rowSet"]
-
-        # Column indices
-        col = {h: i for i, h in enumerate(headers_row)}
-        name_i   = col.get("PLAYER_NAME", col.get("PLAYER_FULL_NAME", 0))
-        team_i   = col.get("TEAM_ABBREVIATION", 1)
-        min_i    = col.get("MIN", col.get("GP", 3))
-        usg_i    = col.get("USG_PCT", col.get("PCT_USG", -1))
-
+        from agents.bbref_on_off_agent import BBRefOnOffAgent, ESPN_TEAM_IDS
+        agent  = BBRefOnOffAgent()
         result: dict = {}
-        for row in rows:
-            name  = str(row[name_i]).lower().strip()
-            team  = str(row[team_i]).upper().strip()
-            try:
-                min_pg  = float(row[min_i])  if row[min_i]  is not None else 0.0
-                usg_pct = float(row[usg_i])  if usg_i >= 0 and row[usg_i] is not None else 0.0
-            except (TypeError, ValueError):
-                min_pg, usg_pct = 0.0, 0.0
-
-            # NBA Stats returns USG_PCT as a decimal (e.g. 0.265 = 26.5%)
-            # Normalise to percentage form
-            if 0 < usg_pct < 1.0:
-                usg_pct *= 100.0
-
-            result[name] = {"usg_pct": round(usg_pct, 2), "min_pg": round(min_pg, 1), "team": team}
-
+        for team_abbr in ESPN_TEAM_IDS:
+            team_rates = agent.get_team_usage_rates(team_abbr)
+            for name_lower, stats in team_rates.items():
+                result[name_lower] = {
+                    "usg_pct": stats["usg_pct"],
+                    "min_pg":  stats["min_pg"],
+                    "team":    stats["team"],
+                }
         _USAGE_CACHE[season]    = result
         _USAGE_CACHE_TS[season] = now
-        logging.info("[usage] Fetched %d player USG rows for %s", len(result), season)
+        logging.info("[usage] ESPN USG%: %d players fetched", len(result))
         return result
-
     except Exception as exc:
-        logging.warning("[usage] fetch_player_usage_rates failed: %s", exc)
+        logging.warning("[usage] fetch_player_usage_rates (ESPN) failed: %s", exc)
         return _USAGE_CACHE.get(season, {})
 
 
@@ -1957,6 +1919,60 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
 
     # Value metric
     out["value"] = (out["proj_pts_dk"] / (out["salary"] / 1000)).round(3)
+
+    # ── ON/OFF Injury Usage Absorption ───────────────────────────────────────
+    # For every player the DK slate marks as OUT (or confirmed injured in injury
+    # data), use BBRefOnOffAgent to compute empirical DK-point deltas for their
+    # teammates and apply those boosts to projections.
+    #
+    # This is what Rotowire's "Starting Lineup Usage Rates" captures: when
+    # Mitchell is OUT, Mobley's usage share jumps from 35% → 45%, translating
+    # to a concrete DK-point boost.  Without this step, the optimizer ignores
+    # the injury-replacement edge entirely.
+    out["on_off_boost"] = 0.0  # tracks how much each player received
+    try:
+        from agents.bbref_on_off_agent import BBRefOnOffAgent
+        _onoff_agent = BBRefOnOffAgent()
+        _usage_data  = fetch_player_usage_rates()
+
+        # Identify OUT players still present in the pool (status=OUT filtered
+        # earlier, but GTD/QUESTIONABLE starters still here and may be ruled
+        # out tonight)
+        # Also look for players who were removed (status==OUT) by checking
+        # if any team on the slate is missing a high-salary player
+        injured_rows = []
+        for team in out["team"].unique():
+            team_df = df[df["team"] == team] if "team" in df.columns else pd.DataFrame()
+            pool_df = out[out["team"] == team]
+            if team_df.empty:
+                continue
+            # Any player in original slate not in active pool = confirmed OUT
+            orig_ids = set(team_df["player_id"].astype(str))
+            pool_ids = set(pool_df["player_id"].astype(str))
+            for missing_id in orig_ids - pool_ids:
+                row = team_df[team_df["player_id"].astype(str) == missing_id]
+                if not row.empty and float(row.iloc[0].get("salary", 0)) >= 4500:
+                    injured_rows.append(row.iloc[0])
+
+        if injured_rows:
+            on_off_map = _onoff_agent.compute(injured_rows, out)
+            for out_row in injured_rows:
+                out_pid  = str(out_row.get("player_id", ""))
+                oo_entry = on_off_map.get(out_pid)
+                before   = out["proj_pts_dk"].copy()
+                out      = estimate_usage_absorption(
+                    out_row, out,
+                    usage_data=_usage_data,
+                    on_off_data=oo_entry,
+                )
+                boost = (out["proj_pts_dk"] - before).clip(lower=0)
+                out["on_off_boost"] = (out["on_off_boost"] + boost).round(2)
+                n_boosted = int((boost > 0.1).sum())
+                print(f"[on_off] {out_row.get('name','?')} OUT → {n_boosted} teammates boosted")
+
+    except Exception as _exc:
+        import logging
+        logging.debug("[on_off] Usage absorption skipped: %s", _exc)
 
     # Game total for stack prioritization — computed first so ownership can use it
     def get_game_total(matchup):
@@ -4290,6 +4306,75 @@ def compute_lineup_usage_impact(
 
     results.sort(key=lambda x: x["delta_dk"], reverse=True)
     return results[:12]  # top 12 beneficiaries
+
+
+def compute_starting_lineup_usage(
+    team: str,
+    player_pool: pd.DataFrame,
+    n_starters: int = 5,
+) -> dict:
+    """
+    Rotowire-style starting lineup usage breakdown.
+
+    Identifies the likely starting 5 for a team (by salary tier + avg_pts),
+    then computes each player's share of the starting lineup's possessions using
+    ESPN game log data (FGA + 0.44*FTA + TOV).  Falls back to avg_pts proxy
+    when ESPN data is unavailable.
+
+    Example output:
+        {
+            "team": "CLE",
+            "minutes_together": 28,
+            "starters": [
+                {"name": "Evan Mobley",      "usg_pct": 35.2, "min_pg": 33.1},
+                {"name": "Donovan Mitchell",  "usg_pct": 24.1, "min_pg": 33.4},
+                {"name": "James Harden",      "usg_pct": 18.3, "min_pg": 29.8},
+                {"name": "Sam Merrill",       "usg_pct": 12.9, "min_pg": 27.0},
+                {"name": "Dean Wade",         "usg_pct": 9.5,  "min_pg": 22.4},
+            ],
+        }
+
+    Mirrors the Rotowire "Starting Lineup Usage Rates" display so it can be
+    used to predict how possession share shifts when one starter is injured.
+    """
+    team_players = player_pool[player_pool["team"] == team].copy()
+    if team_players.empty:
+        return {"team": team, "starters": [], "minutes_together": 0}
+
+    # Identify likely starters: top n_starters by salary (best proxy without
+    # explicit starter/bench flag from the DK slate)
+    top = team_players.nlargest(n_starters, "salary")
+    starter_names = top["name"].tolist() if "name" in top.columns else top.get("player_name", pd.Series()).tolist()
+
+    # Try ESPN game-log based USG% first
+    try:
+        from agents.bbref_on_off_agent import BBRefOnOffAgent
+        agent  = BBRefOnOffAgent()
+        result = agent.get_starting_lineup_usage(team, starter_names)
+        if result.get("starters"):
+            return result
+    except Exception:
+        pass
+
+    # Fallback: use avg_pts as possession proxy, normalise to 100%
+    lineup_stats = []
+    for _, row in top.iterrows():
+        name    = str(row.get("name") or row.get("player_name") or "")
+        avg_pts = float(row.get("avg_pts", 0) or 0)
+        min_pg  = float(row.get("avg_min", row.get("min_pg", 25.0)) or 25.0)
+        lineup_stats.append({"name": name, "usg_pct": max(avg_pts, 1.0), "min_pg": min_pg})
+
+    total = sum(s["usg_pct"] for s in lineup_stats) or 1.0
+    for s in lineup_stats:
+        s["usg_pct"] = round(s["usg_pct"] / total * 100.0, 1)
+    lineup_stats.sort(key=lambda x: -x["usg_pct"])
+
+    min_pgs = [s["min_pg"] for s in lineup_stats]
+    return {
+        "team":             team,
+        "starters":         lineup_stats,
+        "minutes_together": int(min(min_pgs)) if min_pgs else 0,
+    }
 
 
 def score_lineup_leverage(lineup: dict, players: pd.DataFrame) -> dict:

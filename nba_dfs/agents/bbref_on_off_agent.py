@@ -417,6 +417,8 @@ class BBRefOnOffAgent:
                             "blk":  _stat(stats, "BLK"),
                             "tov":  _stat(stats, "TO"),
                             "fg3":  _stat(stats, "3PT"),
+                            "fga":  _stat(stats, "FGA"),
+                            "fta":  _stat(stats, "FTA"),
                         })
 
             if not rows:
@@ -462,6 +464,121 @@ class BBRefOnOffAgent:
             return roster[close[0]]
 
         return None
+
+    # ── Team usage rates ───────────────────────────────────────────────────────
+    def get_team_usage_rates(self, team_dk: str) -> dict[str, dict]:
+        """
+        Compute ESPN-based USG% for every player on a team from their game logs.
+
+        USG% formula (no play-by-play needed):
+            poss_used = FGA + 0.44*FTA + TOV   (per game, last 15 games)
+            USG% = poss_used / (pace_per_48 * MP/48) * 100
+        where pace_per_48 ≈ 100 (league-average NBA pace).
+
+        Returns {name_lower: {usg_pct, poss_pg, min_pg, espn_id}}
+        """
+        espn_team_id = ESPN_TEAM_IDS.get(team_dk.upper())
+        if espn_team_id is None:
+            return {}
+
+        roster = self._get_roster(espn_team_id, team_dk)
+        if not roster:
+            return {}
+
+        result: dict[str, dict] = {}
+        PACE = 100.0  # league-average possessions per 48 minutes
+
+        for name_lower, espn_id in roster.items():
+            gl = self._get_game_log(espn_id)
+            if gl is None or gl.empty:
+                continue
+
+            recent = gl.tail(15)  # weight toward recent form
+            mp_avg  = float(recent["mp"].clip(lower=0).mean())
+            if mp_avg < 1.0:
+                continue
+
+            fga_avg = float(recent.get("fga", 0).fillna(0).mean()) if "fga" in recent.columns else 0.0
+            fta_avg = float(recent.get("fta", 0).fillna(0).mean()) if "fta" in recent.columns else 0.0
+            tov_avg = float(recent["tov"].fillna(0).mean())
+
+            # Fall back to pts-based proxy if FGA/FTA missing from cache
+            if fga_avg == 0:
+                pts_avg = float(recent["pts"].fillna(0).mean())
+                fga_avg = pts_avg / 2.0  # rough: ~2 pts per attempt
+
+            poss_pg = fga_avg + 0.44 * fta_avg + tov_avg
+            # USG% = poss_pg / (PACE * mp_avg/48) * 100
+            usg_pct = (poss_pg / (PACE * mp_avg / 48.0)) * 100.0
+            usg_pct = float(np.clip(usg_pct, 2.0, 45.0))
+
+            result[name_lower] = {
+                "usg_pct":  round(usg_pct, 1),
+                "poss_pg":  round(poss_pg, 2),
+                "min_pg":   round(mp_avg, 1),
+                "espn_id":  espn_id,
+                "team":     team_dk.upper(),
+            }
+
+        return result
+
+    def get_starting_lineup_usage(
+        self,
+        team_dk: str,
+        starters: list[str],          # player name strings (display names)
+        n_games_together: int = 0,     # if known; 0 = estimate
+    ) -> dict:
+        """
+        Rotowire-style starting lineup usage breakdown.
+
+        Returns:
+        {
+            "team": "CLE",
+            "starters": [
+                {"name": "Evan Mobley",     "usg_pct": 35.2},
+                {"name": "Donovan Mitchell", "usg_pct": 24.1},
+                ...
+            ],
+            "minutes_together": <int>,   # estimated or provided
+        }
+
+        Usage shares are normalised so they sum to 100%.
+        """
+        team_usage = self.get_team_usage_rates(team_dk)
+
+        lineup_stats: list[dict] = []
+        for display_name in starters:
+            key = display_name.lower().strip()
+            entry = team_usage.get(key)
+            if entry is None:
+                # fuzzy lookup
+                close = get_close_matches(key, team_usage.keys(), n=1, cutoff=0.75)
+                if close:
+                    entry = team_usage[close[0]]
+            if entry is None:
+                entry = {"usg_pct": 15.0, "min_pg": 25.0}  # league-avg fallback
+            lineup_stats.append({
+                "name":    display_name,
+                "usg_pct": entry["usg_pct"],
+                "min_pg":  entry.get("min_pg", 25.0),
+            })
+
+        total_usg = sum(s["usg_pct"] for s in lineup_stats) or 1.0
+        for s in lineup_stats:
+            s["usg_pct"] = round(s["usg_pct"] / total_usg * 100.0, 1)
+
+        lineup_stats.sort(key=lambda x: -x["usg_pct"])
+
+        # Estimate minutes played together = min of all starters' min_pg
+        if n_games_together == 0:
+            min_pgs = [s["min_pg"] for s in lineup_stats]
+            n_games_together = int(min(min_pgs)) if min_pgs else 25
+
+        return {
+            "team":             team_dk.upper(),
+            "starters":         lineup_stats,
+            "minutes_together": n_games_together,
+        }
 
     # ── Cache helpers ──────────────────────────────────────────────────────────
     def _load_cache(self, key: str) -> Optional[dict]:
