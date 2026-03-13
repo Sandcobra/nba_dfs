@@ -1890,6 +1890,65 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         out.loc[out["status"] == "DEBUT", "proj_pts_dk"] * 0.38
     ).round(2)
 
+    # ── Explosion Profile Signals ─────────────────────────────────────────────
+    # Four signals that predict 2-3x performance probability:
+    #
+    #   1. boom_rate       — historical P(dk >= 1.8x avg). Malik Monk at $4,500
+    #                        has a measurably higher boom rate than a similar-priced
+    #                        consistent player. Inflates ceiling for GPP targeting.
+    #
+    #   2. variance_ratio  — recent_std / season_std. > 1.3 = player is in a
+    #                        "volatile" phase (could boom or bust). For GPP we
+    #                        want this at the cheap tier.
+    #
+    #   3. game_env_mult   — pace × game_total interaction. High-pace + high-total
+    #                        games generate more possessions → more counting stats
+    #                        → higher ceiling for all players in that game.
+    #
+    #   4. salary_gap      — ceiling - (salary/1000 × 5). Positive = underpriced
+    #                        relative to market expectation. Large gaps identify
+    #                        players like Raynaud ($6,300, ceil=64, gap=+32.5).
+    out["boom_rate"]      = 0.05   # baseline: 5% boom games (league average)
+    out["variance_ratio"] = 1.0
+    out["is_volatile"]    = False
+    out["game_env_mult"]  = 1.0
+
+    # 1 & 2: boom_rate + variance_ratio from ESPN game logs
+    try:
+        _exp_client = ESPNDataClient()
+        boom_hits   = 0
+        LG_PACE_EST = 100.0
+        for idx, row in out.iterrows():
+            player_name = str(row.get("name") or row.get("player_name") or "").strip()
+            if not player_name:
+                continue
+            profile = _exp_client.compute_explosion_profile(player_name)
+            if not profile:
+                continue
+            out.at[idx, "boom_rate"]      = profile["boom_rate"]
+            out.at[idx, "variance_ratio"] = profile["variance_ratio"]
+            out.at[idx, "is_volatile"]    = bool(profile["is_volatile"])
+            boom_hits += 1
+        print(f"[projections] Explosion profiles computed for {boom_hits} players")
+    except Exception as _exc:
+        print(f"[projections] Explosion profiles unavailable: {_exc}")
+
+    # 3: game_env_mult — pace × game_total interaction per matchup
+    # Normalised to 1.0 at league-average (pace=100, total=225).
+    # Max boost ≈ 8% for a pace-110 / total-240 game.
+    LG_TOTAL = 225.0
+    LG_PACE  = 100.0
+    for matchup in out["matchup"].unique():
+        gt   = GAME_TOTALS.get(matchup, {})
+        tot  = float(gt.get("total", LG_TOTAL))
+        # Derive pace from away/home implied: higher implied totals → higher pace
+        # (proxy: use implied ratio since we don't always have real pace here)
+        pace = (tot / LG_TOTAL) * LG_PACE   # approximate; overridden by enrich_projections
+        total_factor = (tot  / LG_TOTAL - 1.0) * 0.50   # 50% weight on game total
+        pace_factor  = (pace / LG_PACE  - 1.0) * 0.30   # 30% weight on pace
+        env_mult     = float(np.clip(1.0 + total_factor + pace_factor, 0.92, 1.10))
+        out.loc[out["matchup"] == matchup, "game_env_mult"] = env_mult
+
     # ── Tournament ceiling: salary-tiered fat-tail multipliers ────────────────
     # Backtest (4 nights 3/6–3/9) calibration:
     #   Jaylin Williams  ($5700,  proj=20.4, actual=57.0) → 2.80x
@@ -1906,19 +1965,45 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         ( 5_000, 2.80, 40),   # Value: $5-6.5K → 2.80x, max +40 pts
         (     0, 3.20, 40),   # Cheap: <$5K → 3.20x, max +40 pts
     ]
-    def _get_ceiling(proj, salary):
+    def _get_ceiling(proj, salary, boom_rate=0.05, game_env_mult=1.0):
+        # Base ceiling from salary tier
+        base = proj
         for sal_thresh, mult, max_add in _CEIL_TIERS:
             if salary >= sal_thresh:
-                return round(min(proj * mult, proj + max_add), 2)
-        return round(proj * 3.20, 2)
+                base = min(proj * mult, proj + max_add)
+                break
+        else:
+            base = proj * 3.20
+
+        # Boom-rate inflation: players with high explosion history get wider ceiling.
+        # boom_rate=0.20 → +10% ceiling. Capped at +15% to avoid overcorrection.
+        boom_inflation = float(np.clip(boom_rate * 0.50, 0.0, 0.15))
+
+        # Game environment multiplier: high-pace / high-total games expand ceilings.
+        # Already normalised to 1.0 at league average. Additional contribution
+        # beyond 1.0 is applied at 60% weight (partial — game context is shared).
+        env_inflation = float(np.clip((game_env_mult - 1.0) * 0.60, -0.05, 0.08))
+
+        return round(base * (1.0 + boom_inflation + env_inflation), 2)
 
     out["ceiling"] = out.apply(
-        lambda r: _get_ceiling(r["proj_pts_dk"], r["salary"]), axis=1
+        lambda r: _get_ceiling(
+            r["proj_pts_dk"], r["salary"],
+            r.get("boom_rate", 0.05),
+            r.get("game_env_mult", 1.0),
+        ),
+        axis=1,
     )
-    out["floor"]   = (out["proj_pts_dk"] - 1.28 * out["proj_std"]).clip(0).round(2)
+    out["floor"] = (out["proj_pts_dk"] - 1.28 * out["proj_std"]).clip(0).round(2)
 
     # Value metric
     out["value"] = (out["proj_pts_dk"] / (out["salary"] / 1000)).round(3)
+
+    # Salary inefficiency gap — positive = underpriced vs market expectation.
+    # Market baseline: salary/1000 × 5 is the implied DK expectation at 5x value.
+    # Large positive gaps (e.g. Raynaud $6,300 ceil=64 → gap=+32.5) flag players
+    # the optimizer should weight more heavily in GPP builds.
+    out["salary_gap"] = (out["ceiling"] - out["salary"] / 1000.0 * 5.0).round(2)
 
     # ── ON/OFF Injury Usage Absorption ───────────────────────────────────────
     # For every player the DK slate marks as OUT (or confirmed injured in injury
@@ -1968,7 +2053,7 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
                 boost = (out["proj_pts_dk"] - before).clip(lower=0)
                 out["on_off_boost"] = (out["on_off_boost"] + boost).round(2)
                 n_boosted = int((boost > 0.1).sum())
-                print(f"[on_off] {out_row.get('name','?')} OUT → {n_boosted} teammates boosted")
+                print(f"[on_off] {out_row.get('name','?')} OUT -> {n_boosted} teammates boosted")
 
     except Exception as _exc:
         import logging
@@ -2057,14 +2142,27 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     play_prob = (1.0 - out["dnp_risk"])
     value_ceil_per_k = out["ceiling"] / (out["salary"] / 1000.0)
     value_bonus = (value_ceil_per_k - 4.0).clip(0, 10) * 0.60
+
+    # Salary gap bonus: rewards structurally underpriced players.
+    # salary_gap = ceiling - (salary/1000 * 5).  Normalised: cap at 15pts gap → +1.5 pts.
+    gap_bonus = out["salary_gap"].clip(0, 30) * 0.05
+
+    # Volatile bonus: players in variance-expansion phase get a small GPP lift.
+    # Only applied at cheap/mid tiers where variance translates to GPP edge.
+    vol_bonus = (
+        (out["variance_ratio"] - 1.0).clip(0, 1.0) * 0.8 *
+        (out["salary"] < 7500).astype(float)   # only cheap/mid tier
+    )
+
     out["gpp_score"] = (
         out["ceiling"]     * 0.50 * play_prob +
         out["proj_pts_dk"] * 0.15 * play_prob +
         (1 - out["proj_own"] / 100) * 8 +
-        value_bonus * play_prob
+        value_bonus  * play_prob +
+        gap_bonus    * play_prob +
+        vol_bonus    * play_prob
     ).round(3)
-    # DNP penalty for very-high-risk plays (>30%) — they still get penalized
-    # but less harshly since value bonus already partially offsets DNP risk
+    # DNP penalty for very-high-risk plays (>30%)
     high_risk = out["dnp_risk"] >= 0.30
     out.loc[high_risk, "gpp_score"] = (out.loc[high_risk, "gpp_score"] * 0.85).round(3)
 
@@ -2203,6 +2301,7 @@ def build_lineup(
     correlation_bonus: float = 2.5,
     min_proj_total: float = None,
     base_proj_vals: "np.ndarray | None" = None,
+    max_premium_players: int = 3,    # max players with salary >= $9K (forces salary balance)
 ) -> dict | None:
     """
     ILP lineup optimizer.
@@ -2351,6 +2450,14 @@ def build_lineup(
             prob += pulp.lpSum(x[i] for i in stud_idx) >= _stud_min
         if len(cheap_idx) >= _cheap_min and _cheap_min > 0:
             prob += pulp.lpSum(x[i] for i in cheap_idx) >= _cheap_min
+
+    # Salary-tier balance: cap number of premium-salary ($9K+) players.
+    # Prevents optimizer from packing 4+ studs which leaves only $3K filler slots,
+    # blocking out $4-7K value plays with higher GPP scores (e.g. Rayan Rupert $4K).
+    if max_premium_players is not None and max_premium_players > 0:
+        premium_idx = [i for i in idx if sals[i] >= 9000]
+        if len(premium_idx) > max_premium_players:
+            prob += pulp.lpSum(x[i] for i in premium_idx) <= max_premium_players
 
     # Locks
     if locked_ids:
@@ -2888,11 +2995,22 @@ def generate_gpp_lineups(
     # stack_score = combined_proj × (1 + 0.15 × avg_corr), then derive
     # stack cycling order from the top stacks' matchups.
     # Falls back to O/U ordering when the model is unavailable.
-    stack_games = [
-        matchup for matchup, _ in sorted(
-            GAME_TOTALS.items(), key=lambda kv: -kv[1]["total"]
+    # Build stack_games from actual slate matchups (sorted by game_total descending).
+    # Using GAME_TOTALS directly caused wrong games when the slate differs from the
+    # hardcoded dict (e.g. running a 3/9 slate with 3/6 GAME_TOTALS hardcoded).
+    if "matchup" in players.columns and "game_total" in players.columns:
+        _matchup_totals = (
+            players[["matchup", "game_total"]].dropna()
+            .groupby("matchup")["game_total"].first()
+            .sort_values(ascending=False)
         )
-    ]
+        stack_games = list(_matchup_totals.index)
+    else:
+        stack_games = [
+            matchup for matchup, _ in sorted(
+                GAME_TOTALS.items(), key=lambda kv: -kv[1]["total"]
+            )
+        ]
     _corr_pairs: dict = {}   # populated below; initialized here so try-block enrichment can write to it
     try:
         from nba_dfs.models.correlation_model import CorrelationModel as _CorrModel
@@ -3057,7 +3175,7 @@ def generate_gpp_lineups(
                 prev_lineups=prev_pids[-3:] if prev_pids else None,
                 min_unique=1,
                 locked_ids=list(locked_ids or []),
-                excluded_ids=list(excluded_ids or []),
+                excluded_ids=curr_excl,          # respect exposure cap in fallback
                 ownership_penalty=0.02,
                 stack_game=stack_game,
                 stack_bonus=0.20,
@@ -3069,23 +3187,24 @@ def generate_gpp_lineups(
             )
 
         if result is None:
+            # Last resort: drop diversity + stack, but still respect exposure cap
             result = build_lineup(
                 players_sample,
                 objective_col="gpp_score",
                 prev_lineups=None,
                 min_unique=0,
                 locked_ids=locked_ids,
-                excluded_ids=list(excluded_ids or []),
+                excluded_ids=curr_excl,          # respect exposure cap even last resort
                 ownership_penalty=0.0,
                 stack_game=None,
                 barbell_params=None,
                 correlation_pairs=_corr_pairs,
-                min_proj_total=None,        # last resort: drop floor too
+                min_proj_total=None,
                 base_proj_vals=_base_proj,
             )
 
         if result is None:
-            print(f"  Lineup {lu_num+1}: INFEASIBLE — skipping")
+            print(f"  Lineup {lu_num+1}: INFEASIBLE -- skipping")
             continue
 
         # Attach metadata using ORIGINAL (non-sampled) player pool for
@@ -3229,9 +3348,9 @@ def generate_gpp_lineups(
     # When pool_size > n we generated a large pool and now greedily select
     # the best n by maximising score + leverage while enforcing diversity.
     if pool_size and pool_size > n and len(lineups) > n:
-        print(f"\n[pool] Selecting best {n} from {len(lineups)}-lineup pool…")
+        print(f"\n[pool] Selecting best {n} from {len(lineups)}-lineup pool...")
         lineups = select_portfolio(lineups, n, players)
-        print(f"[pool] Portfolio selection complete — {len(lineups)} lineups")
+        print(f"[pool] Portfolio selection complete -- {len(lineups)} lineups")
 
     # ── Final exposure audit ───────────────────────────────────────────────
     # Hard confirmation: after all post-processing, verify no player exceeds cap.
@@ -3452,7 +3571,7 @@ def run_postmortem(
         print(f"\n  UNDER-EXPOSED STARS (scored 55+, <{max(1, n_ours//5)} lineups):")
         for p, (cnt, sc) in sorted(underexposed.items(), key=lambda x: -x[1][1]):
             own = player_own.get(p, 0)
-            print(f"    {p}: {sc:.1f} pts  — in {cnt}/{n_ours} lineups ({own:.1f}% field own)")
+            print(f"    {p}: {sc:.1f} pts  -- in {cnt}/{n_ours} lineups ({own:.1f}% field own)")
 
     print(f"\n  WINNING LINEUP ({winner['pts']:.2f} pts):")
     for pname in winner_names:
@@ -4452,7 +4571,7 @@ def find_top_stacks(players: pd.DataFrame) -> list:
 # ── Slate analysis printout ───────────────────────────────────────────────────
 def print_slate_analysis(players: pd.DataFrame):
     print("\n" + "="*70)
-    print(f"SLATE ANALYSIS — {date.today().isoformat()}")
+    print(f"SLATE ANALYSIS -- {date.today().isoformat()}")
     print(f"Contest: {CONTEST['name']} | ${CONTEST['entry_fee']} entry | "
           f"Max {CONTEST['max_entries']} entries")
     print("="*70)
@@ -4462,7 +4581,7 @@ def print_slate_analysis(players: pd.DataFrame):
     # Flags
     zero_avg = players[players["avg_pts"] <= 5].copy()
     if not zero_avg.empty:
-        print(f"\nPLAYERS WITH 0 OR VERY LOW AVG — LIKELY OUT / INJURED:")
+        print(f"\nPLAYERS WITH 0 OR VERY LOW AVG -- LIKELY OUT / INJURED:")
         for _, r in zero_avg.iterrows():
             flag = "LIKELY OUT" if r["avg_pts"] == 0 else "low avg"
             print(f"  {r['name']:<30s} ${r['salary']:,}  avg={r['avg_pts']}  [{flag}]")
@@ -4489,7 +4608,7 @@ def print_slate_analysis(players: pd.DataFrame):
 
     print(f"\nTOP STACKS BY GAME TOTAL:")
     for s in find_top_stacks(players)[:6]:
-        print(f"  [{s['team']}] {s['game']} (O/U {s['game_total']}) — "
+        print(f"  [{s['team']}] {s['game']} (O/U {s['game_total']}) -- "
               f"{', '.join(s['players'][:3])}  Combined: {s['proj']:.1f} pts")
 
 
@@ -5260,7 +5379,7 @@ def late_swap_lineups(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    print("NBA DFS Model — Slate Test Runner")
+    print("NBA DFS Model -- Slate Test Runner")
     print(f"Loading: {SALARY_FILE}")
     print("-" * 60)
 
@@ -5273,17 +5392,50 @@ def main():
     raw = parse_salary_file(SALARY_FILE)
     print(f"Loaded {len(raw)} players from {SALARY_FILE.name}")
 
-    # 2. Project
+    # 2. Fetch live injury data (ESPN scraper -- free, no API key needed)
+    injury_status_map: dict = {}
+    try:
+        from data.injury_scraper import InjuryScraper
+        _sc = InjuryScraper()
+        _records = _sc.scrape_espn()
+        _sc.close()
+        for rec in _records:
+            injury_status_map[rec["name"]] = rec["status"]
+        out_ct = sum(1 for s in injury_status_map.values() if s == "OUT")
+        gtd_ct = sum(1 for s in injury_status_map.values() if s in ("GTD", "QUESTIONABLE", "DOUBTFUL"))
+        print(f"Injury report loaded: {out_ct} OUT, {gtd_ct} GTD/Questionable")
+    except Exception as _e:
+        print(f"[warn] Injury scraper failed: {_e} -- using salary-tier DNP estimates only")
+
+    # 3. Project
     players = build_projections(raw)
     # Remove OUT players (avg=0 AND salary low) and players already flagged
     players = players[players["proj_pts_dk"] > 0].copy()
+
+    # Apply live injury statuses: OUT players dropped, GTD/QUESTIONABLE get projection cuts
+    if injury_status_map:
+        pre_inj = len(players)
+        players = apply_status_updates(players, injury_status_map)
+        dropped = pre_inj - len(players)
+        if dropped:
+            print(f"Live injury update: {dropped} OUT players removed from pool")
+
+    # Hard filter: remove remaining high-DNP-risk players (>= 35%) from optimizer pool.
+    # These players hurt more than help -- a DNP destroys an entire lineup slot.
+    # Players with 12-25% risk stay in (meaningful upside if they play).
+    if "dnp_risk" in players.columns:
+        pre_dnp = len(players)
+        players = players[players["dnp_risk"] < 0.35].copy()
+        removed = pre_dnp - len(players)
+        if removed:
+            print(f"Removed {removed} players with salary-tier DNP risk >= 35%")
     print(f"After filtering: {len(players)} eligible players")
 
-    # 3. Slate analysis
+    # 4. Slate analysis
     print_slate_analysis(players)
     print_strategy()
 
-    # 4. Generate lineups
+    # 5. Generate lineups
     lineups = generate_gpp_lineups(
         players,
         n=NUM_LINEUPS,
@@ -5312,6 +5464,9 @@ def main():
         "avg_pts", "proj_pts_dk", "ceiling", "floor",
         "value", "proj_own", "gpp_score", "matchup", "game_total",
     ]
+    for _sig in ["boom_rate", "variance_ratio", "is_volatile", "game_env_mult", "salary_gap", "on_off_boost"]:
+        if _sig in players.columns:
+            proj_cols.append(_sig)
     if "dnp_risk" in players.columns:
         proj_cols.append("dnp_risk")
     players[proj_cols].to_csv(proj_path, index=False)
@@ -5331,7 +5486,7 @@ def main():
     print("  " + "-"*45)
     exp_df = exposure_report(lineups, len(lineups))
     for _, r in exp_df.iterrows():
-        bar = "█" * int(r["exposure_pct"] / 5)
+        bar = "|" * int(r["exposure_pct"] / 5)
         print(f"  {r['player']:<28s} {r['count']:>4d}x  {r['exposure_pct']:>6.1f}%  {bar}")
 
     # 9. Summary
@@ -5361,7 +5516,7 @@ def main():
         _result_files = sorted(contest_dir.glob("contest-results_*.csv"), reverse=True)
         if _result_files:
             _latest = _result_files[0]
-            print(f"\n[postmortem] Found results: {_latest.name} — running diagnostic…")
+            print(f"\n[postmortem] Found results: {_latest.name} -- running diagnostic...")
             run_postmortem(
                 contest_csv=_latest,
                 our_username="Sandcobra",  # DK username

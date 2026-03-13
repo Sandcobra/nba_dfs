@@ -201,6 +201,70 @@ class ESPNDataClient:
             "is_cold": form_ratio < 0.85,
         }
 
+    # --------------------------------------------------------- explosion profile
+    def compute_explosion_profile(
+        self,
+        player_name: str,
+        team: Optional[str] = None,
+        boom_threshold: float = 1.8,   # game must be >= boom_threshold x season_avg
+        recent_n: int = 10,            # games for variance window
+        min_games: int = 8,            # minimum games needed for reliable stats
+    ) -> dict:
+        """
+        Compute GPP ceiling signals from a player's full game log.
+
+        Returns
+        -------
+        boom_rate       : float  — fraction of games where dk_score >= 1.8x season_avg
+                          This is the historical probability of a "monster" game.
+        variance_ratio  : float  — recent_std / season_std
+                          > 1.3 means the player is in "volatile" mode (expanding variance)
+        is_volatile     : bool   — variance_ratio > 1.3
+        recent_std      : float  — std dev of last recent_n games
+        season_std      : float  — std dev of full season
+        season_avg      : float  — full-season DK average
+        games_played    : int
+
+        Usage in projections
+        --------------------
+        A player with boom_rate=0.20 and is_volatile=True at a cheap salary is
+        a high-leverage GPP play even if their average projection is modest.
+        The game environment multiplier (pace × game_total) further amplifies
+        this signal when the environment favors counting-stat explosions.
+        """
+        df = self.get_player_game_logs(player_name, team=team, n_games=82)
+        if df.empty or "fantasy_pts_dk" not in df.columns:
+            return {}
+
+        pts = df["fantasy_pts_dk"].dropna().values
+        if len(pts) < min_games:
+            return {}
+
+        season_avg = float(np.mean(pts))
+        season_std = float(np.std(pts)) if len(pts) > 1 else 0.0
+        if season_avg <= 0:
+            return {}
+
+        # Boom rate: fraction of games >= boom_threshold × season_avg
+        boom_floor = season_avg * boom_threshold
+        boom_rate  = float(np.mean(pts >= boom_floor))
+
+        # Variance expansion: recent vs season
+        recent_pts = pts[:min(recent_n, len(pts))]
+        recent_std = float(np.std(recent_pts)) if len(recent_pts) > 1 else season_std
+        variance_ratio = (recent_std / season_std) if season_std > 0 else 1.0
+        is_volatile    = variance_ratio > 1.3
+
+        return {
+            "boom_rate":      round(boom_rate, 3),
+            "variance_ratio": round(variance_ratio, 3),
+            "is_volatile":    is_volatile,
+            "recent_std":     round(recent_std, 2),
+            "season_std":     round(season_std, 2),
+            "season_avg":     round(season_avg, 2),
+            "games_played":   int(len(pts)),
+        }
+
     # ------------------------------------------------------------- schedules
     def get_b2b_dataframe(self, slate_date: str) -> pd.DataFrame:
         target = datetime.strptime(slate_date, "%Y-%m-%d").date()
