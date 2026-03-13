@@ -23,7 +23,7 @@ import itertools
 from pathlib import Path
 from datetime import date, datetime
 
-from data.espn_data_client import ESPNDataClient
+from nba_dfs.data.espn_data_client import ESPNDataClient
 
 # ── dependency check ─────────────────────────────────────────────────────────
 try:

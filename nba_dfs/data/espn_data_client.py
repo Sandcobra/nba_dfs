@@ -16,8 +16,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from core.config import CACHE_DIR, CURRENT_SEASON
-from utils.helpers import normalize_name, compute_dk_fantasy_pts
+from nba_dfs.core.config import CACHE_DIR, CURRENT_SEASON
+from nba_dfs.utils.helpers import normalize_name, compute_dk_fantasy_pts
 
 
 class ESPNDataClient:

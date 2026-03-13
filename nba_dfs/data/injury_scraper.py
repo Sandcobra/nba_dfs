@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from core.config import SCRAPER_DELAY_SECS
+from nba_dfs.core.config import SCRAPER_DELAY_SECS
 
 
 HEADERS = {
