@@ -2741,21 +2741,30 @@ def build_lineup(
         if len(cheap_idx) >= _cheap_min and _cheap_min > 0:
             prob += pulp.lpSum(x[i] for i in cheap_idx) >= _cheap_min
 
-    # Salary-tier balance: cap number of premium-salary ($9K+) players.
+    # Salary-tier balance: cap number of premium-salary ($8K+) players.
     # Postmortem 3/6-3/12: pros averaged 1.57 players >=8K; we averaged 2.20 — over by 0.63.
-    # Reducing from 3 to 2 forces budget into the $5.5K-$7.5K mid-value tier.
+    # Previous cap was $9K+ which left $8K-$9K players unchecked. Moved to $8K+ to correct.
     if max_premium_players is not None and max_premium_players > 0:
-        premium_idx = [i for i in idx if sals[i] >= 9000]
+        premium_idx = [i for i in idx if sals[i] >= 8000]
         if len(premium_idx) > max_premium_players:
             prob += pulp.lpSum(x[i] for i in premium_idx) <= max_premium_players
 
-    # Mid-value floor: require at least 2 players in the $5,500-$7,500 range.
-    # Postmortem 3/6-3/12: pros averaged 3.0 players in $5K-$7K; we averaged 1.9.
-    # The pros' value plays (Jaylin Williams, Javon Small, Danny Wolf, Cam Spencer)
-    # were all in this tier — not sub-$5K punt plays that scored 0.
-    mid_value_idx = [i for i in idx if 5500 <= sals[i] <= 7500]
-    if len(mid_value_idx) >= 2:
-        prob += pulp.lpSum(x[i] for i in mid_value_idx) >= 2
+    # Mid-value floor: require at least 3 players in the $5,000-$7,000 range.
+    # Postmortem 3/6-3/12: pros averaged 2.5 players in $5K-$7K; we averaged 0.29.
+    # THIS was our biggest structural gap. The pros' value plays (Jaylin Williams $5.7K,
+    # Javon Small $5.4K, Danny Wolf $4.5K, Cam Spencer $5.4K) were all in this tier.
+    # Previous floor was $5.5K-$7.5K >=2 — too loose. Tightened to the actual value zone.
+    mid_value_idx = [i for i in idx if 5000 <= sals[i] <= 7000]
+    if len(mid_value_idx) >= 3:
+        prob += pulp.lpSum(x[i] for i in mid_value_idx) >= 3
+
+    # Sub-$5K cap: at most 2 punt plays per lineup.
+    # Postmortem 3/6-3/12: pros averaged 1.5 players <$5K; we averaged 3.38.
+    # Overcapping at the cheap end wastes roster slots on DNP-risk fillers.
+    # Cap at 2 to force budget into the productive $5K-$7K value tier.
+    sub5k_idx = [i for i in idx if sals[i] < 5000]
+    if len(sub5k_idx) > 2:
+        prob += pulp.lpSum(x[i] for i in sub5k_idx) <= 2
 
     # Locks
     if locked_ids:
@@ -5984,12 +5993,32 @@ def main():
     avg_ceil = sum(lu["ceiling"] for lu in lineups) / len(lineups)
     avg_sal  = sum(lu["total_salary"] for lu in lineups) / len(lineups)
 
+    # Salary tier construction report
+    # Target from 7-day backtest: pros avg $8K+=1.5, $5K-$7K=2.5, <$5K=1.5
+    _pid_index = players.set_index("player_id")
+    _tier_premium, _tier_mid, _tier_cheap = [], [], []
+    for lu in lineups:
+        pids = [str(p) for p in lu["player_ids"]]
+        pids_in_pool = [p for p in pids if p in _pid_index.index]
+        _sals = [int(_pid_index.loc[p, "salary"]) for p in pids_in_pool]
+        _tier_premium.append(sum(1 for s in _sals if s >= 8000))
+        _tier_mid.append(sum(1 for s in _sals if 5000 <= s <= 7000))
+        _tier_cheap.append(sum(1 for s in _sals if s < 5000))
+
+    _avg_prem = sum(_tier_premium) / len(lineups)
+    _avg_mid  = sum(_tier_mid)     / len(lineups)
+    _avg_chp  = sum(_tier_cheap)   / len(lineups)
+
     print(f"\n{'='*60}")
     print(f"SUMMARY: {len(lineups)} lineups generated")
     print(f"  Avg projection:    {avg_proj:.1f} DK pts")
     print(f"  Avg ceiling:       {avg_ceil:.1f} DK pts")
     print(f"  Avg salary used:   ${avg_sal:,.0f}")
     print(f"  Total investment:  ${len(lineups) * CONTEST['entry_fee']}")
+    print(f"\n  SALARY CONSTRUCTION (target from 7-day pro backtest):")
+    print(f"    $8K+ (studs):      {_avg_prem:.2f} avg  [pro target: 1.57]  {'OK' if _avg_prem <= 2.0 else 'HIGH'}")
+    print(f"    $5K-$7K (value):   {_avg_mid:.2f}  avg  [pro target: 2.50]  {'OK' if _avg_mid >= 2.0 else 'LOW'}")
+    print(f"    <$5K (cheap):      {_avg_chp:.2f}  avg  [pro target: 1.50]  {'OK' if _avg_chp <= 2.0 else 'HIGH'}")
     print(f"  Files written:")
     print(f"    DK Upload:       {upload_path}")
     print(f"    Lineups JSON:    {lineups_json_path}")

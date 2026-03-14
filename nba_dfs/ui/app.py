@@ -806,6 +806,25 @@ async def run_optimization(
 
         _state["lineups"] = lineups
 
+        # Salary tier construction report (printed to optimizer log)
+        # Target from 7-day backtest: pros avg $8K+=1.57, $5K-$7K=2.50, <$5K=1.50
+        _pid_idx = opt_players.set_index("player_id") if "player_id" in opt_players.columns else None
+        if _pid_idx is not None and not _pid_idx.empty and "salary" in _pid_idx.columns:
+            _t_prem, _t_mid, _t_chp = [], [], []
+            for _lu in lineups:
+                _pids = [str(p) for p in _lu.get("player_ids", [])]
+                _pids_ok = [p for p in _pids if p in _pid_idx.index]
+                _sals = [int(_pid_idx.loc[p, "salary"]) for p in _pids_ok]
+                _t_prem.append(sum(1 for s in _sals if s >= 8000))
+                _t_mid.append(sum(1 for s in _sals if 5000 <= s <= 7000))
+                _t_chp.append(sum(1 for s in _sals if s < 5000))
+            _n = len(lineups)
+            _ap, _am, _ac = sum(_t_prem)/_n, sum(_t_mid)/_n, sum(_t_chp)/_n
+            print(f"\nSALARY CONSTRUCTION CHECK:")
+            print(f"  $8K+ studs:    {_ap:.2f} avg  (target ~1.57) {'OK' if _ap <= 2.0 else 'HIGH'}")
+            print(f"  $5K-$7K value: {_am:.2f} avg  (target ~2.50) {'OK' if _am >= 2.0 else 'LOW - INVESTIGATE'}")
+            print(f"  <$5K cheap:    {_ac:.2f} avg  (target ~1.50) {'OK' if _ac <= 2.0 else 'HIGH'}")
+
         # Export DK CSV
         today = date.today().strftime("%Y-%m-%d")
         OUTPUT_DIR.mkdir(exist_ok=True)
