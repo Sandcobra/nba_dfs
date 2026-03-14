@@ -1895,6 +1895,21 @@ def load_fc_data(fc_path: "Path | str | None" = None) -> "pd.DataFrame | None":
         # Positive = favorable matchup, negative = tough matchup
         _dvp_raw = df.get("Def v Pos", df.get("DVP", pd.Series(dtype=float)))
         out["fc_dvp"] = pd.to_numeric(_dvp_raw, errors="coerce")
+        # Role / injury signals
+        out["fc_season_min"]  = pd.to_numeric(df.get("Min",    pd.Series(dtype=float)), errors="coerce")  # season avg mins
+        out["fc_consistency"] = pd.to_numeric(df.get("Con.",   pd.Series(dtype=float)), errors="coerce")  # game-to-game consistency %
+        out["fc_proj_stdv"]   = pd.to_numeric(df.get("STDV.1", pd.Series(dtype=float)), errors="coerce")  # projection std dev
+        _start_raw = df.get("Start", pd.Series(dtype=str))
+        out["fc_starter"]     = (_start_raw.astype(str).str.strip().str.upper() == "Y").astype(float)
+        # mins_expansion: proj_mins / season_min — >1.3x = expanded role (injury replacement signal)
+        _season = out["fc_season_min"].fillna(10).clip(lower=5)
+        out["fc_mins_expansion"] = (out["fc_mins"] / _season).round(3)
+        # GPP score: ceiling per salary_k × ownership leverage × mins_expansion
+        # This is what top-1% pros optimize for in GPP — not raw projection
+        # Validated 3/6-3/12: surfaces Rupert(2.25x), Wolf, Fontecchio, Dru Smith,
+        # Killian Hayes(1.96x) which all appeared at 25-80% in top-1% lineups
+        _sal_k     = (out["fc_floor"].fillna(0) * 0).add(1)   # placeholder; real salary from merge
+        out["fc_gpp_score"]   = float("nan")  # computed in _merge_fc after salary is available
         # Drop rows with no usable projection
         out = out[out["fc_proj"].notna() & (out["fc_proj"] > 0)].copy()
         return out
@@ -1912,7 +1927,8 @@ def _merge_fc(players: pd.DataFrame, fc: "pd.DataFrame | None") -> pd.DataFrame:
     """
     _ALL_FC_COLS = ("fc_proj", "fc_own", "fc_mins", "fc_floor", "fc_ceiling",
                     "fc_fppm", "fc_usg", "fc_stdv36", "fc_avg36", "fc_team_pts", "fc_fppm_proj",
-                    "fc_dvp")
+                    "fc_dvp", "fc_season_min", "fc_consistency", "fc_proj_stdv",
+                    "fc_starter", "fc_mins_expansion", "fc_gpp_score")
     if fc is None or fc.empty:
         for col in _ALL_FC_COLS:
             players[col] = float("nan")
@@ -1941,6 +1957,24 @@ def _merge_fc(players: pd.DataFrame, fc: "pd.DataFrame | None") -> pd.DataFrame:
 
     matched = players["fc_proj"].notna().sum()
     _logging_fc.info("[fc] Merged FC data: %d / %d players matched", matched, len(players))
+
+    # Compute fc_gpp_score now that salary is available
+    # Formula: ceiling × (1 - proj_own%) × mins_expansion / salary_k
+    # Validated 3/6-3/12: correctly ranks injury-replacement plays (Rupert, Wolf,
+    # Fontecchio, Dru Smith, Killian Hayes) that appeared in 25-80% of top-1% lineups
+    # but were missed by pure fc_proj ranking.
+    has_ceil = "fc_ceiling" in players.columns and players["fc_ceiling"].notna().any()
+    has_own  = "fc_own"     in players.columns and players["fc_own"].notna().any()
+    has_exp  = "fc_mins_expansion" in players.columns and players["fc_mins_expansion"].notna().any()
+    if has_ceil and "salary" in players.columns:
+        _sal_k   = players["salary"].clip(lower=1000) / 1000
+        _ceil    = players["fc_ceiling"].fillna(0)
+        _own_lev = (1 - players["fc_own"].fillna(15) / 100).clip(lower=0.3) if has_own else 1.0
+        _exp     = players["fc_mins_expansion"].fillna(1.0).clip(upper=2.5) if has_exp else 1.0
+        players["fc_gpp_score"] = (_ceil / _sal_k * _own_lev * _exp).round(3)
+    else:
+        players["fc_gpp_score"] = float("nan")
+
     return players
 
 
@@ -2407,6 +2441,23 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         out.loc[fc_mins_mask & (out["fc_mins"].between(20, 23.9)), "dnp_risk"] = out.loc[
             fc_mins_mask & (out["fc_mins"].between(20, 23.9)), "dnp_risk"
         ].clip(upper=0.12)
+
+    # ── Injury-replacement override: mins_expansion >1.5x + meaningful projection ──
+    # Players whose FC-projected minutes are 50%+ above their season average are
+    # filling in for an OUT starter. Their salary-tier DNP risk is wrong — they
+    # ARE playing (FC already confirmed this by projecting them for starter minutes).
+    # Validated: Rupert 2.25x (39%), Hayes 1.96x (81%), Gardner 2.55x (28%),
+    # Fontecchio 1.44x (59%) — all appeared heavily in top-1% lineups.
+    if "fc_mins_expansion" in out.columns:
+        _exp_mask = (
+            out["fc_mins_expansion"].fillna(1.0) >= 1.50
+        ) & (
+            out["fc_proj"].fillna(0) >= 15
+        ) & (
+            out["fc_own"].fillna(20) <= 25   # not already heavy chalk
+        )
+        out.loc[_exp_mask, "dnp_risk"] = out.loc[_exp_mask, "dnp_risk"].clip(upper=0.08)
+
     # ── Projected minutes (best estimate from all available signals) ─────────
     # IMPORTANT: avg_pts was removed as a fallback signal. avg_pts is a HISTORICAL
     # season average — Larry Nance Jr. might average 12 DK pts/game (→ 18 est. min)
@@ -3465,35 +3516,91 @@ def generate_gpp_lineups(
     top_game = stack_games[0] if stack_games else None
     second_game = stack_games[1] if len(stack_games) > 1 else top_game
 
+    # ── Slate regime detection ────────────────────────────────────────────────────
+    # Count injury-replacement signals across the slate.
+    # When >20% of active players show mins_expansion > 1.25, the slate is
+    # dominated by injury cascades — cheap replacements are the core GPP play.
+    _slate_regime = "normal"
+    _extreme_expansion_ids: list[str] = []
+    if "fc_mins_expansion" in players.columns:
+        _n_active = len(players)
+        _n_expanded = int((players["fc_mins_expansion"].fillna(1.0) > 1.25).sum())
+        _exp_pct = _n_expanded / max(_n_active, 1)
+        if _exp_pct > 0.22:
+            _slate_regime = "high_injury"
+        elif _exp_pct > 0.14:
+            _slate_regime = "moderate_injury"
+        else:
+            _slate_regime = "normal"
+
+        # Identify extreme expansion plays — injury replacements confirmed by FC
+        # These should be included in lineups regardless of game stack assignment
+        _exp_mask = (
+            (players["fc_mins_expansion"].fillna(1.0) >= 1.50)
+            & (players.get("fc_proj", players.get("proj_pts_dk", 0)).fillna(0) >= 15)
+            & (players.get("fc_own", pd.Series(20, index=players.index)).fillna(20) <= 22)
+            & (players["dnp_risk"].fillna(0.5) <= 0.15)
+        )
+        _extreme_expansion_ids = [
+            str(r["player_id"])
+            for _, r in players[_exp_mask].iterrows()
+        ]
+
+        print(f"\n  Slate regime: {_slate_regime.upper()} "
+              f"({_n_expanded}/{_n_active} = {_exp_pct:.0%} players with mins_expansion>1.25)")
+        if _extreme_expansion_ids:
+            print(f"  Extreme expansion plays (injury replacements — target 20-40% exposure):")
+            for _eid in _extreme_expansion_ids[:8]:
+                _er = players[players["player_id"].astype(str) == _eid]
+                if not _er.empty:
+                    _er = _er.iloc[0]
+                    print(f"    {_er.get('name', _eid):<28s} "
+                          f"${_er.get('salary', 0):,}  "
+                          f"proj={_er.get('proj_pts_dk', 0):.1f}  "
+                          f"exp={_er.get('fc_mins_expansion', 1):.2f}x  "
+                          f"own={_er.get('fc_own', '?'):.1f}%  "
+                          f"gpp={_er.get('fc_gpp_score', 0):.1f}")
+    else:
+        _exp_pct = 0.0
+        print(f"\n  Slate regime: UNKNOWN (fc_mins_expansion not available)")
+
     # ── Step 2: Find core plays (80-90% exposure targets) ────────────────────────
     # Based on 7-day analysis: each day has 2-3 ultra-chalk plays in 80-100%
     # of winning lineups. These are either top value plays (<$5.5K) or the
     # confirmed safe stud (highest proj player with >20 min).
     def find_core_plays(df: pd.DataFrame) -> list[str]:
-        """Return player_ids that should appear in 80%+ of lineups."""
-        mins_col = "fc_mins" if "fc_mins" in df.columns else "proj_mins" if "proj_mins" in df.columns else None
-        dnp_col = "dnp_risk" if "dnp_risk" in df.columns else None
+        """Return player_ids that should appear in 80%+ of lineups.
 
+        On normal slates: top value play + top stud.
+        On injury slates: top fc_gpp_score plays (ceiling × own_leverage × mins_expansion / salary).
+        Validated 3/6-3/12: gpp_score correctly ranks Rupert, Wolf, Fontecchio,
+        Dru Smith, and Killian Hayes that appeared at 25-80% in top-1% lineups.
+        """
+        dnp_col = "dnp_risk" if "dnp_risk" in df.columns else None
         eligible = df.copy()
-        # Filter out injured / high DNP risk players
         if dnp_col:
             eligible = eligible[eligible[dnp_col] < 0.25]
+        mins_col = "fc_mins" if "fc_mins" in df.columns else None
         if mins_col:
             eligible = eligible[eligible[mins_col].fillna(0) >= 15]
+        if eligible.empty:
+            return []
 
-        # Value plays: proj_pts_dk per $1K salary
-        eligible = eligible.copy()
-        eligible["value_score"] = eligible["proj_pts_dk"] / (eligible["salary"] / 1000)
+        core_ids: set[str] = set()
 
-        # Category A: Best 2 value plays under $5,500
-        cheap_plays = eligible[eligible["salary"] <= 5500].nlargest(2, "value_score")
+        # Category A: Best 2 cheap plays by fc_gpp_score (injury-aware GPP metric)
+        # Falls back to proj/salary value score if gpp_score not available
+        if "fc_gpp_score" in eligible.columns and eligible["fc_gpp_score"].notna().any():
+            gpp_sort_col = "fc_gpp_score"
+        else:
+            eligible["_vs"] = eligible["proj_pts_dk"] / (eligible["salary"] / 1000)
+            gpp_sort_col = "_vs"
+        cheap_plays = eligible[eligible["salary"] <= 5500].nlargest(2, gpp_sort_col)
+        for _, row in cheap_plays.iterrows():
+            core_ids.add(str(row["player_id"]))
 
         # Category B: Top 1 overall stud (highest proj regardless of salary)
         stud = eligible.nlargest(1, "proj_pts_dk")
-
-        core_ids = set()
-        for _, row in cheap_plays.iterrows():
-            core_ids.add(str(row["player_id"]))
         for _, row in stud.iterrows():
             core_ids.add(str(row["player_id"]))
 
@@ -3509,33 +3616,55 @@ def generate_gpp_lineups(
 
     # ── Step 3: Build stack pool for top game ─────────────────────────────────────
     # Take top 6 players from top game — we'll cycle through 4-player combos
-    def get_stack_pool(df: pd.DataFrame, game: str, pool_size: int = 6) -> list[str]:
+    def get_stack_pool(df: pd.DataFrame, game: str, pool_size: int = 8,
+                       slate_regime: str = "normal") -> list[str]:
         """
-        Hybrid selection: top 3 by proj_pts_dk + top 3 by value_score (proj/salary_k).
-        This captures both studs AND cheap injury-replacement value plays that top 1%
-        pros use to create salary flexibility. Pure proj ranking misses Danny Wolf
-        ($4.5K, 68% top-1%) in favor of Gregory Jackson ($6.4K, 2% top-1%).
+        Hybrid pool: top 4 by proj_pts_dk + top 4 by fc_gpp_score.
+        Pool of 8 gives C(8,4)=70 combinations — the optimizer finds the
+        salary-feasible combos from the full set.
+
+        fc_gpp_score = ceiling × (1-proj_own%) × mins_expansion / salary_k
+        Captures what top-1% pros optimize for on injury-replacement slates.
+        Validated on 3/9, 3/10, 3/12 — surfaces cheap injury plays that
+        appeared at 25-80% of top-1% lineups but were buried by proj ranking.
+
+        On injury/high_injury slates: gpp_score pool gets 5 slots vs 3 for proj.
+        On normal slates: 4+4 split.
         """
         if not game or "matchup" not in df.columns:
             return []
         game_players = df[df["matchup"] == game].copy()
-        # Filter out high DNP risk
         if "dnp_risk" in game_players.columns:
             game_players = game_players[game_players["dnp_risk"] < 0.50]
         if game_players.empty:
             return []
 
-        # Top 3 by raw projection (studs)
-        top_proj = game_players.nlargest(3, "proj_pts_dk")
-
-        # Top 3 by value score (cheap injury-replacement plays)
-        if "salary" in game_players.columns and game_players["salary"].gt(0).any():
-            game_players["_val"] = game_players["proj_pts_dk"] / (game_players["salary"] / 1000)
-            top_val = game_players.nlargest(pool_size, "_val")  # extra candidates to avoid dupes
+        # Slot allocation changes by slate regime
+        if slate_regime in ("high_injury", "moderate_injury"):
+            n_proj, n_gpp = 3, 5   # lean gpp on injury slates
         else:
-            top_val = game_players.nlargest(pool_size, "proj_pts_dk")
+            n_proj, n_gpp = 4, 4   # balanced on normal slates
 
-        # Merge: start with proj picks, fill remaining slots with value picks not already included
+        top_proj = game_players.nlargest(n_proj, "proj_pts_dk")
+
+        # GPP sort column: fc_gpp_score preferred, fallback to value
+        if "fc_gpp_score" in game_players.columns and game_players["fc_gpp_score"].notna().any():
+            gpp_col = "fc_gpp_score"
+        elif "salary" in game_players.columns and game_players["salary"].gt(0).any():
+            game_players["_val"] = game_players["proj_pts_dk"] / (game_players["salary"] / 1000)
+            gpp_col = "_val"
+        else:
+            gpp_col = "proj_pts_dk"
+        # Filter gpp candidates: require fc_proj >= 18 to exclude ultra-cheap lottery
+        # tickets ($3K players, proj=12) that inflate gpp_score via mins_expansion
+        # but are unreliable. Fontecchio ($3.3K proj=24.6) and Dru Smith ($3.4K
+        # proj=23.6) pass; Keshad Johnson ($3K proj=12.3) does not.
+        _proj_col = "fc_proj" if "fc_proj" in game_players.columns else "proj_pts_dk"
+        _gpp_cands = game_players[game_players[_proj_col].fillna(0) >= 18]
+        if len(_gpp_cands) < n_gpp:
+            _gpp_cands = game_players  # fallback if too few pass threshold
+        top_gpp = _gpp_cands.nlargest(pool_size, gpp_col)  # oversample, stop at pool_size
+
         seen_ids: set[str] = set()
         pool: list[str] = []
         for _, r in top_proj.iterrows():
@@ -3543,7 +3672,7 @@ def generate_gpp_lineups(
             if pid not in seen_ids:
                 pool.append(pid)
                 seen_ids.add(pid)
-        for _, r in top_val.iterrows():
+        for _, r in top_gpp.iterrows():
             if len(pool) >= pool_size:
                 break
             pid = str(r["player_id"])
@@ -3552,15 +3681,19 @@ def generate_gpp_lineups(
                 seen_ids.add(pid)
         return pool
 
-    top_stack_pool = get_stack_pool(players, top_game, pool_size=6)
-    second_stack_pool = get_stack_pool(players, second_game, pool_size=5)
+    top_stack_pool    = get_stack_pool(players, top_game,    pool_size=8, slate_regime=_slate_regime)
+    second_stack_pool = get_stack_pool(players, second_game, pool_size=6, slate_regime=_slate_regime)
 
-    print(f"\n  Top game stack pool [{top_game}]:")
+    print(f"\n  Top game stack pool [{top_game}] (8 players → C(8,4)=70 combos):")
     for pid in top_stack_pool:
         row = players[players["player_id"].astype(str) == pid]
         if not row.empty:
             r = row.iloc[0]
-            print(f"    {r.get('name', pid)}: ${r.get('salary',0):,} proj={r.get('proj_pts_dk',0):.1f}")
+            gpp = r.get("fc_gpp_score", float("nan"))
+            exp = r.get("fc_mins_expansion", float("nan"))
+            own = r.get("fc_own", float("nan"))
+            gpp_str = f"  gpp={gpp:.1f}  exp={exp:.2f}x  own={own:.0f}%" if not pd.isna(gpp) else ""
+            print(f"    {r.get('name', pid):<28s} ${r.get('salary',0):,}  proj={r.get('proj_pts_dk',0):.1f}{gpp_str}")
 
     # Generate all 4-man combinations from the top stack pool
     # Prefer combos that don't overlap with core plays (avoid salary concentration)
