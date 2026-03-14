@@ -1787,6 +1787,15 @@ def load_fc_data(fc_path: "Path | str | None" = None) -> "pd.DataFrame | None":
         out["fc_mins"]    = pd.to_numeric(df["Proj Mins"], errors="coerce")
         out["fc_floor"]   = pd.to_numeric(df.get("Floor",   pd.Series(dtype=float)), errors="coerce")
         out["fc_ceiling"] = pd.to_numeric(df.get("Ceiling", pd.Series(dtype=float)), errors="coerce")
+        # Additional FC stats (corr with FPTS confirmed 3/13 backtest)
+        out["fc_fppm"]    = pd.to_numeric(df.get("FPPM",    pd.Series(dtype=float)), errors="coerce")  # +0.428 corr
+        out["fc_usg"]     = pd.to_numeric(df.get("USG",     pd.Series(dtype=float)), errors="coerce")  # +0.501 corr
+        out["fc_stdv36"]  = pd.to_numeric(df.get("STDV/36", pd.Series(dtype=float)), errors="coerce")  # ceiling width
+        out["fc_avg36"]   = pd.to_numeric(df.get("AVG/36",  pd.Series(dtype=float)), errors="coerce")  # +0.429 corr
+        # Team implied total (TeamPts) — better stack signal than game O/U
+        out["fc_team_pts"] = pd.to_numeric(df.get("TeamPts", pd.Series(dtype=float)), errors="coerce")
+        # FPPM-based projection: proj_mins * FPPM = direct DK point estimate
+        out["fc_fppm_proj"] = (out["fc_mins"] * out["fc_fppm"]).round(2)
         # Drop rows with no usable projection
         out = out[out["fc_proj"].notna() & (out["fc_proj"] > 0)].copy()
         return out
@@ -1798,19 +1807,22 @@ def load_fc_data(fc_path: "Path | str | None" = None) -> "pd.DataFrame | None":
 def _merge_fc(players: pd.DataFrame, fc: "pd.DataFrame | None") -> pd.DataFrame:
     """
     Merge Fantasy Cruncher data into player pool by fuzzy name match.
-    Adds columns: fc_proj, fc_own, fc_mins, fc_floor, fc_ceiling.
+    Adds columns: fc_proj, fc_own, fc_mins, fc_floor, fc_ceiling,
+                  fc_fppm, fc_usg, fc_stdv36, fc_avg36, fc_team_pts, fc_fppm_proj.
     Players with no FC match get NaN in those columns.
     """
+    _ALL_FC_COLS = ("fc_proj", "fc_own", "fc_mins", "fc_floor", "fc_ceiling",
+                    "fc_fppm", "fc_usg", "fc_stdv36", "fc_avg36", "fc_team_pts", "fc_fppm_proj")
     if fc is None or fc.empty:
-        for col in ("fc_proj", "fc_own", "fc_mins", "fc_floor", "fc_ceiling"):
+        for col in _ALL_FC_COLS:
             players[col] = float("nan")
         return players
 
     from difflib import get_close_matches as _gcm
 
     fc_name_lc = {n.lower(): i for i, n in enumerate(fc["fc_name"])}
-    fc_cols = ["fc_proj", "fc_own", "fc_mins", "fc_floor", "fc_ceiling"]
-    for col in fc_cols:
+    fc_cols = [c for c in _ALL_FC_COLS if c in fc.columns]
+    for col in _ALL_FC_COLS:
         players[col] = float("nan")
 
     for pidx, row in players.iterrows():
@@ -2212,18 +2224,34 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
 
     out["proj_own"] = (out["proj_own"] * inj_mult).clip(1, 40).round(1)
 
-    # Blend FC projection into proj_pts_dk when available (60% FC / 40% our model).
-    # FC Proj comes from Fantasy Cruncher which uses minutes projections, matchup data,
-    # and pace adjustments — far more accurate than avg_pts alone.
+    # Blend projection: 3-way FC Proj + FPPM*Mins + our model.
+    # 3/13 backtest correlations: FC Proj +0.859, Proj Mins +0.791, USG +0.501
+    # FPPM * Proj Mins = direct DK point estimate (e.g. Murray: 1.33 * 30.25 = 40.2)
+    # Blending FPPM-based estimate reduces over-reliance on FC Proj for players
+    # with unusual matchup pace or role changes not captured by season FPPM.
     if "fc_proj" in out.columns:
         has_fc = out["fc_proj"].notna() & (out["fc_proj"] > 0)
+        has_fppm = (
+            out.get("fc_fppm_proj", pd.Series(dtype=float)).notna() &
+            (out.get("fc_fppm_proj", pd.Series(dtype=float)) > 0)
+        ) if "fc_fppm_proj" in out.columns else pd.Series(False, index=out.index)
+
         fc_n = has_fc.sum()
         if fc_n > 0:
-            out.loc[has_fc, "proj_pts_dk"] = (
-                out.loc[has_fc, "fc_proj"]     * 0.60 +
-                out.loc[has_fc, "proj_pts_dk"] * 0.40
+            # Where both FC Proj and FPPM*Mins are available: 3-way blend
+            both = has_fc & has_fppm
+            fc_only = has_fc & ~has_fppm
+            out.loc[both, "proj_pts_dk"] = (
+                out.loc[both, "fc_proj"]        * 0.55 +
+                out.loc[both, "fc_fppm_proj"]   * 0.20 +
+                out.loc[both, "proj_pts_dk"]    * 0.25
             ).round(2)
-            _logging_fc.info("[fc] Blended FC projection for %d players", fc_n)
+            # Where only FC Proj is available: 2-way blend
+            out.loc[fc_only, "proj_pts_dk"] = (
+                out.loc[fc_only, "fc_proj"]     * 0.60 +
+                out.loc[fc_only, "proj_pts_dk"] * 0.40
+            ).round(2)
+            _logging_fc.info("[fc] Blended FC+FPPM projection for %d players (%d 3-way)", fc_n, int(both.sum()))
 
     # Use FC projected minutes for more accurate DNP risk when available.
     # Pros use proj_mins as a DNP proxy: < 15 mins projected = genuine DNP risk.
@@ -3145,17 +3173,33 @@ def generate_gpp_lineups(
     # Use CorrelationModel.get_teammate_stacks() to rank stacks by
     # stack_score = combined_proj × (1 + 0.15 × avg_corr), then derive
     # stack cycling order from the top stacks' matchups.
-    # Falls back to O/U ordering when the model is unavailable.
-    # Build stack_games from actual slate matchups (sorted by game_total descending).
-    # Using GAME_TOTALS directly caused wrong games when the slate differs from the
-    # hardcoded dict (e.g. running a 3/9 slate with 3/6 GAME_TOTALS hardcoded).
-    if "matchup" in players.columns and "game_total" in players.columns:
-        _matchup_totals = (
-            players[["matchup", "game_total"]].dropna()
-            .groupby("matchup")["game_total"].first()
-            .sort_values(ascending=False)
-        )
-        stack_games = list(_matchup_totals.index)
+    # Stack ordering: rank by sum of top-3 FC Proj within each matchup.
+    # 3/13 backtest: game O/U had -0.031 correlation with FPTS — essentially useless.
+    # The HOU game (O/U 230.5) produced better plays than CLE@DAL (O/U 236.5) because
+    # Murray+Green+Thompson had higher individual projections. Top-3 FC Proj sum captures
+    # this directly: it measures actual talent concentration in each game.
+    # Falls back to game_total ordering when FC data is unavailable.
+    if "matchup" in players.columns and "proj_pts_dk" in players.columns:
+        if "fc_proj" in players.columns and players["fc_proj"].notna().sum() > 10:
+            # Use top-3 FC Proj sum per matchup as stack priority signal
+            _matchup_scores = (
+                players[["matchup", "fc_proj"]].dropna()
+                .groupby("matchup")["fc_proj"]
+                .apply(lambda x: x.nlargest(3).sum())
+                .sort_values(ascending=False)
+            )
+            stack_games = list(_matchup_scores.index)
+            print(f"  Stack order (top-3 FC Proj sum per game):")
+            for _m, _sc in _matchup_scores.items():
+                print(f"    {_m:<22s} top-3 sum: {_sc:.1f} pts")
+        else:
+            # Fallback: game_total ordering
+            _matchup_totals = (
+                players[["matchup", "game_total"]].dropna()
+                .groupby("matchup")["game_total"].first()
+                .sort_values(ascending=False)
+            )
+            stack_games = list(_matchup_totals.index)
     else:
         stack_games = [
             matchup for matchup, _ in sorted(
@@ -5554,6 +5598,23 @@ def main():
     else:
         print("[warn] No Fantasy Cruncher CSV found in contest/ -- using model-only projections")
         print("       Upload draftkings_NBA_YYYY-MM-DD_players.csv to contest/ for better accuracy")
+
+    # 1c. Fetch live Vegas lines (Odds API) and apply to game_total column.
+    # The FC file has Spread/Total/TeamPts but may be hours old by game time.
+    # Odds API catches any line movement since FC was exported.
+    try:
+        _vegas = fetch_vegas_lines(player_pool=raw)
+        if _vegas and not any(k == "_meta" for k in _vegas):
+            raw = apply_game_total_updates(raw, _vegas)
+            print(f"Vegas lines updated: {len(_vegas)} games from Odds API")
+            for _m, _v in sorted(_vegas.items(), key=lambda x: -x[1].get("total", 0)):
+                print(f"  {_m:<24s} O/U {_v['total']:.1f}  "
+                      f"home {_v['home_implied']:.1f} / away {_v['away_implied']:.1f}")
+        else:
+            _err = (_vegas or {}).get("_meta", {}).get("error", "key not set")
+            print(f"[warn] Odds API unavailable ({_err}) -- using FC/avg-pts game totals")
+    except Exception as _ve:
+        print(f"[warn] Vegas lines fetch failed: {_ve}")
 
     # 2. Fetch live injury data (ESPN scraper -- free, no API key needed)
     injury_status_map: dict = {}
