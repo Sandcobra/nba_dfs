@@ -2392,6 +2392,16 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         out.loc[fc_mins_mask & (out["fc_mins"].between(15, 22)), "dnp_risk"] = out.loc[
             fc_mins_mask & (out["fc_mins"].between(15, 22)), "dnp_risk"
         ].clip(lower=0.18)
+        # DOWNWARD override: confirmed high-minute players must not be removed by salary-tier dnp_risk.
+        # E.g. Mitchell Robinson ($4K, fc_mins=24) gets dnp_risk=0.40 from salary tier alone,
+        # which removes him before the bench filter runs. Cap dnp_risk at 0.05 for fc_mins >= 24,
+        # and at 0.12 for fc_mins 20-23. Salary is NOT a proxy for minutes.
+        out.loc[fc_mins_mask & (out["fc_mins"] >= 24), "dnp_risk"] = out.loc[
+            fc_mins_mask & (out["fc_mins"] >= 24), "dnp_risk"
+        ].clip(upper=0.05)
+        out.loc[fc_mins_mask & (out["fc_mins"].between(20, 23.9)), "dnp_risk"] = out.loc[
+            fc_mins_mask & (out["fc_mins"].between(20, 23.9)), "dnp_risk"
+        ].clip(upper=0.12)
     # DNP-adjusted expected value: E[score] = P(plays) * projection
     out["dnp_adj_proj"] = (out["proj_pts_dk"] * (1 - out["dnp_risk"])).round(2)
 
@@ -2758,13 +2768,14 @@ def build_lineup(
     if len(mid_value_idx) >= 3:
         prob += pulp.lpSum(x[i] for i in mid_value_idx) >= 3
 
-    # Sub-$5K cap: at most 2 punt plays per lineup.
-    # Postmortem 3/6-3/12: pros averaged 1.5 players <$5K; we averaged 3.38.
-    # Overcapping at the cheap end wastes roster slots on DNP-risk fillers.
-    # Cap at 2 to force budget into the productive $5K-$7K value tier.
+    # Sub-$5K cap: at most 3 punt plays per lineup.
+    # Analysis of 800 top lineups across 8 dates: pros averaged 2.66 players <$5K, NOT 1.5.
+    # 80%+ of top lineups have at least one player under $4K (e.g. Clint Capela $3.1K, 28 min).
+    # Cap at 2 was too restrictive — it forced budget UP into the $7K+ tier when the real
+    # value is concentrated at $3K-$4.5K for confirmed high-minute cheap plays.
     sub5k_idx = [i for i in idx if sals[i] < 5000]
-    if len(sub5k_idx) > 2:
-        prob += pulp.lpSum(x[i] for i in sub5k_idx) <= 2
+    if len(sub5k_idx) > 3:
+        prob += pulp.lpSum(x[i] for i in sub5k_idx) <= 3
 
     # Locks
     if locked_ids:
@@ -5796,6 +5807,19 @@ def main():
         removed = pre_dnp - len(players)
         if removed:
             print(f"Removed {removed} players with salary-tier DNP risk >= 35%")
+
+    # Blanket FC minutes filter: remove ANY player projected < 15 minutes regardless of salary.
+    # Salary is not a proxy for minutes — a $6K player with 10 projected mins is worse than
+    # a $4K player with 28 projected mins. This must happen AFTER the dnp_risk filter so that
+    # the downward override (fc_mins >= 20 → dnp_risk capped at 0.12) has already fired.
+    if "fc_mins" in players.columns:
+        fc_low_mask = players["fc_mins"].notna() & (players["fc_mins"] < 15)
+        if fc_low_mask.any():
+            dropped_names = players.loc[fc_low_mask, "name"].tolist()
+            players = players[~fc_low_mask].copy()
+            print(f"Removed {len(dropped_names)} players with FC projected minutes < 15: "
+                  f"{', '.join(dropped_names[:10])}{'...' if len(dropped_names) > 10 else ''}")
+
     print(f"After filtering: {len(players)} eligible players")
 
     # 3b. News intel — NBC Sports (primary) with X beat writers as fallback.

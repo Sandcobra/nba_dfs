@@ -557,6 +557,16 @@ async def run_optimization(
                             print(f"[News] Bench filter removed {_drop.sum()} sub-$5K players "
                                   f"with no confirmed role")
 
+                    # Blanket FC minutes filter: remove ANY player projected < 15 minutes
+                    # regardless of salary. Salary is not a proxy for minutes.
+                    if "fc_mins" in opt_players.columns:
+                        _fc_low = opt_players["fc_mins"].notna() & (opt_players["fc_mins"] < 15)
+                        if _fc_low.any():
+                            _dropped_names = opt_players.loc[_fc_low, "name"].tolist()
+                            opt_players = opt_players[~_fc_low].copy()
+                            print(f"[Filter] Removed {len(_dropped_names)} players with FC mins < 15: "
+                                  f"{', '.join(_dropped_names[:8])}{'...' if len(_dropped_names) > 8 else ''}")
+
                 # Emit SSE event
                 q.put({"type": "news_intel", "data": {
                     "headline":        ni_summary.get("headline", ""),
