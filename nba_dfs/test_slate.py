@@ -1990,19 +1990,9 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         out.loc[out["status"] == "DEBUT", "proj_pts_dk"] * 0.38
     ).round(2)
 
-    # Refine proj_std using FC STDV/36 (actual observed game-to-game DK variance)
-    # STDV/36 × (proj_mins / 36) → expected std for tonight's minutes.
-    # Blend 70% FC observed variance + 30% salary-proxy estimate.
-    # Effect: high-variance players (Jokic, Lively) get wider ceiling/floor;
-    #         consistent starters (Brunson) get tighter range → better GPP targeting.
-    if "fc_stdv36" in out.columns and "fc_mins" in out.columns:
-        _has_fc_std = out["fc_stdv36"].notna() & out["fc_mins"].notna() & (out["fc_mins"] > 5)
-        _fc_std_scaled = (
-            out.loc[_has_fc_std, "fc_stdv36"] * out.loc[_has_fc_std, "fc_mins"] / 36.0
-        ).round(2)
-        out.loc[_has_fc_std, "proj_std"] = (
-            _fc_std_scaled * 0.70 + out.loc[_has_fc_std, "proj_std"] * 0.30
-        ).round(2)
+    # NOTE: FC STDV/36 is NOT used for proj_std — 3/13 backtest showed -0.137
+    # correlation with actual FPTS. High variance ≠ high score on typical slates.
+    # FC Proj (+0.859) and Proj Mins (+0.791) are the signals that actually matter.
 
     # ── Explosion Profile Signals ─────────────────────────────────────────────
     # Four signals that predict 2-3x performance probability:
