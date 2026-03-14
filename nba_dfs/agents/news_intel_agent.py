@@ -97,17 +97,29 @@ _PATTERNS: list[tuple[str, list[str]]] = [
     ("SCRATCHED", [
         r"\bscratched\b",
         r"\bwill not play\b",
-        r"\bhas been ruled out\b",
         r"\bwon.t play\b",
+        r"\bhas been ruled out\b",
+        r"\bruled out\b",                          # "Ruled out: Player" / "has been ruled out"
+        r"\bis ruled out\b",
         r"\bout tonight\b",
         r"\bout for (?:tonight|the game)\b",
+        r"\bwill miss tonight\b",
+        r"\bwill miss (?:the game|tonight.s game)\b",
+        r"\b- OUT\b",                              # "Player (knee) - OUT"
+        r"\(OUT\)",                                # "(OUT)" status tag
+        r"\bhas been ruled out for\b",
+        r"\bnot (?:playing|available) tonight\b",
+        r"\bdid not travel\b",
+        r"\bwill not suit up\b",
     ]),
     ("LOAD_MANAGEMENT", [
         r"\bload management\b",
+        r"\bload mgmt\b",
         r"\brest(?:ing)? tonight\b",
         r"\bsitting out for rest\b",
         r"\bmanagement rest\b",
         r"\bwill rest\b",
+        r"\bsit(?:ting)? tonight for rest\b",
     ]),
     ("BENCH_DEMOTION", [
         r"\bcom(?:es?|ing) off the bench\b",
@@ -135,6 +147,11 @@ _PATTERNS: list[tuple[str, list[str]]] = [
         r"\binsert(?:ed|s)? into the starting five\b",
         r"\bexpected to start with .{3,40} out\b",
         r"\bwill draw the start\b",
+        r"\bwill start in (?:place of|place)\b",
+        r"\bgets? the start\b",
+        r"\bdraw(?:s|ing)? the start\b",
+        r"\bmoving into the starting\b",
+        r"\bpromoted to the starting lineup\b",
     ]),
     ("LIMITED_RETURN", [
         r"\breturn(?:ing|s|ed)? from (?:an? )?(?:\w+ )?injury\b",

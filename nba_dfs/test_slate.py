@@ -5647,7 +5647,9 @@ def main():
 
     def _fc_mins_ok(row):
         mins = row.get("fc_mins")
-        return pd.notna(mins) and float(mins) >= 24
+        # >= 20 mins: legitimate rotation player (Mitchell Robinson 24, Clint Capela 22,
+        # Duncan Robinson 23.75 all passed this on 3/13 and were top-10 plays)
+        return pd.notna(mins) and float(mins) >= 20
 
     pre_bench = len(players)
     bench_mask = players["salary"] < 5000
