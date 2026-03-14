@@ -478,6 +478,19 @@ async def run_optimization(
                     "description":  split["description"],
                 }})
 
+            # ── Layer 1 minutes filter (before news intel, no signal exceptions) ─
+            # proj_mins < 16 is a hard cutoff: salary proxy at $4.1K = 15.9 min.
+            # This catches sub-$4.1K players without FC data (AJ Johnson, DeAndre Jordan).
+            # FC-data players are protected: fc_mins is used in proj_mins directly.
+            _mins_col_l1 = "proj_mins" if "proj_mins" in opt_players.columns else "fc_mins"
+            if _mins_col_l1 in opt_players.columns:
+                _l1_low = opt_players[_mins_col_l1].notna() & (opt_players[_mins_col_l1] < 16)
+                if _l1_low.any():
+                    _l1_names = opt_players.loc[_l1_low, "name"].tolist()
+                    opt_players = opt_players[~_l1_low].copy()
+                    print(f"[MinsFlt L1] Removed {len(_l1_names)} players proj_mins < 16: "
+                          f"{', '.join(_l1_names[:10])}{'...' if len(_l1_names) > 10 else ''}")
+
             # ── News Intel enrichment ─────────────────────────────────────────
             # Runs before GT/field analysis so projections already reflect
             # breaking news (bench demotions, starting replacements, etc.)
@@ -533,46 +546,30 @@ async def run_optimization(
                         print(f"[News] {len(ni_excluded)} players excluded by news signals "
                               f"({before - len(opt_players)} removed from pool)")
 
-                    # Apply sub-$5K bench filter: remove players priced < $5,000
-                    # who have no confirmed role signal AND no FC mins >= 20.
-                    # Mirrors the same filter in test_slate.py main().
+                    # Extended bench + minutes filter — mirrors test_slate.py logic exactly.
+                    # Runs AFTER news intel so role signals are known.
+                    # Covers salary <$6.5K (not just <$5K) to catch Larry Nance Jr.,
+                    # Gradey Dick, and similar $5-6.5K bench players.
                     _role_signal_pids = {
                         pid for pid, imp in ni_impacts.items()
                         if imp.get("signal_type", imp.get("signal", ""))
                         in ("STARTING_REPLACEMENT", "USAGE_INCREASE", "CLEARED_FULLY")
                     }
                     if "salary" in opt_players.columns:
-                        _bench_mask   = opt_players["salary"] < 5000
-                        _no_signal    = ~opt_players["player_id"].astype(str).isin(_role_signal_pids)
-                        _fc_mins_col  = opt_players.get("fc_mins") if hasattr(opt_players, "get") \
-                                        else opt_players["fc_mins"] if "fc_mins" in opt_players.columns \
-                                        else None
-                        if _fc_mins_col is not None:
-                            _no_fc_mins = ~(opt_players["fc_mins"].notna() & (opt_players["fc_mins"] >= 20))
+                        _mins_col_b = "proj_mins" if "proj_mins" in opt_players.columns else "fc_mins"
+                        _bench_mask = opt_players["salary"] < 6500
+                        _no_signal  = ~opt_players["player_id"].astype(str).isin(_role_signal_pids)
+                        if _mins_col_b in opt_players.columns:
+                            _no_mins_ok = ~(opt_players[_mins_col_b].notna() &
+                                            (opt_players[_mins_col_b] >= 22))
                         else:
-                            _no_fc_mins = pd.Series(True, index=opt_players.index)
-                        _drop = _bench_mask & _no_signal & _no_fc_mins
+                            _no_mins_ok = pd.Series(True, index=opt_players.index)
+                        _drop = _bench_mask & _no_signal & _no_mins_ok
                         if _drop.any():
+                            _drop_names = opt_players.loc[_drop, "name"].tolist()
                             opt_players = opt_players[~_drop].copy()
-                            print(f"[News] Bench filter removed {_drop.sum()} sub-$5K players "
-                                  f"with no confirmed role")
-
-                    # Multi-layer minutes filter using proj_mins (fc_mins → avg_pts est → salary proxy).
-                    # The old fc_mins-only check was blind to players not in FC export.
-                    _mins_col = "proj_mins" if "proj_mins" in opt_players.columns else "fc_mins"
-                    if _mins_col in opt_players.columns:
-                        _hard_low = opt_players[_mins_col].notna() & (opt_players[_mins_col] < 12)
-                        if _hard_low.any():
-                            _hn = opt_players.loc[_hard_low, "name"].tolist()
-                            opt_players = opt_players[~_hard_low].copy()
-                            print(f"[MinsFlt L1] Removed {len(_hn)} with proj_mins < 12: "
-                                  f"{', '.join(_hn[:8])}{'...' if len(_hn) > 8 else ''}")
-                        _soft_low = opt_players[_mins_col].notna() & (opt_players[_mins_col] < 15)
-                        if _soft_low.any():
-                            _sn = opt_players.loc[_soft_low, "name"].tolist()
-                            opt_players = opt_players[~_soft_low].copy()
-                            print(f"[MinsFlt L2] Removed {len(_sn)} with proj_mins < 15: "
-                                  f"{', '.join(_sn[:8])}{'...' if len(_sn) > 8 else ''}")
+                            print(f"[MinsFlt L3] Removed {_drop.sum()} players (salary <$6.5K, "
+                                  f"proj_mins <22, no role signal): {', '.join(_drop_names[:12])}")
 
                 # Emit SSE event
                 q.put({"type": "news_intel", "data": {
