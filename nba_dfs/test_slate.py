@@ -3300,6 +3300,32 @@ def generate_gpp_lineups(
             players["gt_max_exposure"].clip(lower=1).astype(int),
         ))
 
+    # ── Chalk anchor override ─────────────────────────────────────────────────
+    # Pro data (800 lineups, 7 dates): there is always 1-2 players appearing in
+    # 80%+ of top-50 finishes. Mitchell Robinson (41% owned, $4K starter, fc_mins=24)
+    # appeared in 89% of top-50 on 3/13 but we capped him at 33% (7/21 lineups).
+    # Chalk anchors: top-10 gpp_score + proj_own >= 25% + proj_mins >= 20.
+    # These confirmed chalk plays get their exposure raised to 80%.
+    _chalk_anchor_pids: set = set()
+    if "gpp_score" in players.columns and "proj_own" in players.columns:
+        _mins_anchor_col = "proj_mins" if "proj_mins" in players.columns else "fc_mins"
+        _mins_anchor = players[_mins_anchor_col] if _mins_anchor_col in players.columns \
+                       else pd.Series(30.0, index=players.index)
+        _chalk_cand = players[
+            (players["gpp_score"].rank(ascending=False) <= 10) &
+            (players["proj_own"] >= 25) &
+            (_mins_anchor.fillna(0) >= 20)
+        ]
+        for _, _cr in _chalk_cand.iterrows():
+            _pid = str(_cr["player_id"])
+            _chalk_anchor_pids.add(_pid)
+            _chalk_cap = max(_gt_exp_map.get(_pid, 0), round(n * 0.80))
+            _gt_exp_map[_pid] = _chalk_cap
+            print(f"  Chalk anchor: {_cr['name']} "
+                  f"(own={_cr['proj_own']:.0f}%, gpp={_cr['gpp_score']:.1f}, "
+                  f"proj_mins={_mins_anchor.get(_cr.name, '?')}) "
+                  f"→ exposure cap raised to {_chalk_cap}/{n} lineups")
+
     has_tail = "tail_index" in players.columns
     has_std  = "proj_std"   in players.columns
     if not has_tail:
@@ -3491,6 +3517,36 @@ def generate_gpp_lineups(
             print(f"  Stack anchor [{_sg}]: {_top_row['name']} "
                   f"(gpp={_top_row['gpp_score']:.1f}, own={_top_row['proj_own']:.0f}%)")
 
+    # ── Weighted stack sequence ────────────────────────────────────────────
+    # Pro data (800+ lineups, 7 dates): 80-95% of top lineups stack from
+    # top 1-2 projected games. Round-robin across all games gave 15/21 wrong
+    # game on 3/13D. New distribution: Game#1=60%, Game#2=25%, rest share 15%.
+    _stack_weights: list[float] = []
+    for _gi in range(n_games):
+        if _gi == 0:
+            _stack_weights.append(0.60)
+        elif _gi == 1:
+            _stack_weights.append(0.25)
+        else:
+            _stack_weights.append(0.15 / max(1, n_games - 2))
+    _stack_sequence: list[str] = []
+    _running_cnt = 0
+    for _gi, (_game, _sw) in enumerate(zip(stack_games, _stack_weights)):
+        if _gi == n_games - 1:
+            cnt = n - _running_cnt
+        else:
+            cnt = max(1, round(n * _sw))
+        _stack_sequence.extend([_game] * cnt)
+        _running_cnt += cnt
+    # Pad/trim to exactly n entries (rounding edge cases)
+    while len(_stack_sequence) < n:
+        _stack_sequence.append(stack_games[0])
+    _stack_sequence = _stack_sequence[:n]
+    print(f"  Stack sequence ({n} lineups):")
+    from collections import Counter as _Counter
+    for _g, _c in sorted(_Counter(_stack_sequence).items(), key=lambda x: -x[1]):
+        print(f"    {_g}: {_c} lineups ({100*_c/n:.0f}%)")
+
     for lu_num in range(n):
         # ── Thompson sample: fresh projection draw for this lineup ─────────
         players_sample = _thompson_sample_players(players)
@@ -3504,7 +3560,7 @@ def generate_gpp_lineups(
                 curr_excl.append(pid)
 
         own_pen    = own_pen_schedule[lu_num % len(own_pen_schedule)]
-        stack_game = stack_games[lu_num % n_games]
+        stack_game = _stack_sequence[lu_num]
 
         # Lock the game's top anchor player unless they're near exposure cap
         curr_locks = list(locked_ids or [])
