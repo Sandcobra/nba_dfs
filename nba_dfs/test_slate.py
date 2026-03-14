@@ -2329,13 +2329,21 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         (out["salary"] < 7500).astype(float)   # only cheap/mid tier
     )
 
+    # USG bonus (fc_usg corr +0.501): each % above league avg (20%) → +0.25, capped +6.
+    # Added here AND in recompute_proj_own_and_gpp() for consistency.
+    if "fc_usg" in out.columns:
+        _usg_bonus_build = ((out["fc_usg"].fillna(20.0) - 20.0) * 0.25).clip(0, 6)
+    else:
+        _usg_bonus_build = 0.0
+
     out["gpp_score"] = (
         out["ceiling"]     * 0.50 * play_prob +
         out["proj_pts_dk"] * 0.15 * play_prob +
         (1 - out["proj_own"] / 100) * 8 +
-        value_bonus  * play_prob +
-        gap_bonus    * play_prob +
-        vol_bonus    * play_prob
+        value_bonus        * play_prob +
+        gap_bonus          * play_prob +
+        vol_bonus          * play_prob +
+        _usg_bonus_build   * play_prob
     ).round(3)
     # DNP penalty for very-high-risk plays (>30%)
     high_risk = out["dnp_risk"] >= 0.30
@@ -2446,11 +2454,23 @@ def refresh_ownership(players: pd.DataFrame) -> pd.DataFrame:
             df.loc[gainer_mask, "proj_own"] + 4.0
         ).clip(1, 40).round(1)
 
-    # Recompute gpp_score everywhere with updated proj_own
+    # Recompute gpp_score everywhere with updated proj_own.
+    # USG bonus: 3/13 backtest showed fc_usg corr +0.501 with actual FPTS.
+    # Added as additive term (NOT blended into proj_pts_dk) to avoid double-
+    # counting FC Proj which already incorporates usage. Effect: differentiates
+    # players with similar projections — 35% USG star > 20% USG role player
+    # at the same projected score. Scale: each % above 20 → +0.25 bonus, capped
+    # at +6. League avg 20% USG → 0 bonus; 35% USG → +3.75; 44% USG → +6.
+    if "fc_usg" in df.columns:
+        _usg_bonus = ((df["fc_usg"].fillna(20.0) - 20.0) * 0.25).clip(0, 6)
+    else:
+        _usg_bonus = 0.0
+
     df["gpp_score"] = (
         df["ceiling"] * 0.60
         + df["proj_pts_dk"] * 0.25
         + (1 - df["proj_own"] / 100) * 10
+        + _usg_bonus
     ).round(3)
 
     return df
