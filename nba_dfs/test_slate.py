@@ -5843,28 +5843,15 @@ def main():
               f"(use injury bump + STARTING_REPLACEMENT signal to unlock)")
     print(f"Final pool: {len(players)} players\n")
 
-    # 3d. Line movement detection (FC baseline vs current Odds API).
-    # FC implied totals (fc_team_pts) were set when FC was exported, typically
-    # hours before game time.  Sharp bettors move lines between then and tip-off.
-    # A team whose implied total rises ≥1.5 pts since FC export got sharp action —
-    # their players deserve a gpp_score bonus even if the absolute level already
-    # looks good.  Critically, spread movement splits the bonus correctly:
-    # a narrowing spread with a rising total means the UNDERDOG benefits more.
-    _movement: dict = {}
-    try:
-        if "_vegas" in dir() and _vegas and not any(k == "_meta" for k in _vegas):
-            _movement = detect_line_movement(players, _vegas)
-            if _movement:
-                players = apply_line_movement(players, _movement)
-                print("--- LINE MOVEMENT (FC baseline vs current) ---")
-                for _team, _delta in sorted(_movement.items(), key=lambda x: -x[1]):
-                    _arrow = "↑" if _delta > 0 else "↓"
-                    _bonus = float(np.clip(_delta * 0.25, -4.0, 4.0))
-                    print(f"  {_team:<4s} implied total {_arrow}{abs(_delta):.1f}  "
-                          f"→ gpp_score {'+' if _bonus >= 0 else ''}{_bonus:.2f} per player")
-                print("----------------------------------------------\n")
-    except Exception as _mv_err:
-        pass   # movement detection is non-critical
+    # NOTE: Line movement gpp_score bonus was removed after 3/13 validation.
+    # Spread narrowing (e.g. HOU/NO -7→-5.5) was interpreted as NOP implied
+    # total rising more, but the actual winning stacks were HOU-heavy. Root
+    # cause: spread movement predicts COVERING, not DFS scoring. In NBA, a
+    # narrowing spread often reflects a key player being questionable —
+    # which increases REMAINING teammates' usage, not the underdog's.
+    # The absolute implied total (already in game_total_factor) is the correct
+    # signal. detect_line_movement() / apply_line_movement() are kept in code
+    # for reference but NOT called here.
 
     # 4. Slate analysis
     print_slate_analysis(players)
