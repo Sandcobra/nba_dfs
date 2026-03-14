@@ -3292,25 +3292,40 @@ def generate_gpp_lineups(
     # Use CorrelationModel.get_teammate_stacks() to rank stacks by
     # stack_score = combined_proj × (1 + 0.15 × avg_corr), then derive
     # stack cycling order from the top stacks' matchups.
-    # Stack ordering: rank by sum of top-3 FC Proj within each matchup.
-    # 3/13 backtest: game O/U had -0.031 correlation with FPTS — essentially useless.
-    # The HOU game (O/U 230.5) produced better plays than CLE@DAL (O/U 236.5) because
-    # Murray+Green+Thompson had higher individual projections. Top-3 FC Proj sum captures
-    # this directly: it measures actual talent concentration in each game.
-    # Falls back to game_total ordering when FC data is unavailable.
+    # Stack ordering: rank by sum of FC Proj for players UNDER $7,000.
+    #
+    # 7-day backtest (3/6-3/12) tested three criteria against actual pro stack game:
+    #   A. Game O/U total:             0/7 correct (worst — stars in avoid games inflate totals)
+    #   B. FC Proj sum all players:    1/7 correct (marginally better)
+    #   C. FC Proj sum <$7K players:   2/7 correct, top-2 on 6/7 days (best)
+    #
+    # Why <$7K works: pros stack the game with the most AFFORDABLE high-value players,
+    # not the game with the biggest star. High-salary anchors (Luka, LeBron) appear in
+    # games the pros deliberately avoid for stacking. Filtering under $7K removes those
+    # salary-prohibitive games and surfaces the real value-dense opportunities.
     if "matchup" in players.columns and "proj_pts_dk" in players.columns:
         if "fc_proj" in players.columns and players["fc_proj"].notna().sum() > 10:
-            # Use top-3 FC Proj sum per matchup as stack priority signal
-            _matchup_scores = (
-                players[["matchup", "fc_proj"]].dropna()
-                .groupby("matchup")["fc_proj"]
-                .apply(lambda x: x.nlargest(3).sum())
-                .sort_values(ascending=False)
-            )
+            # Sum FC Proj for players priced under $7,000 per matchup
+            _affordable = players[
+                players["fc_proj"].notna() & (players["salary"] < 7000)
+            ][["matchup", "fc_proj", "salary"]]
+            if len(_affordable) >= 4:
+                _matchup_scores = (
+                    _affordable.groupby("matchup")["fc_proj"].sum()
+                    .sort_values(ascending=False)
+                )
+            else:
+                # Not enough sub-$7K FC data — fall back to top-3 all-player sum
+                _matchup_scores = (
+                    players[["matchup", "fc_proj"]].dropna()
+                    .groupby("matchup")["fc_proj"]
+                    .apply(lambda x: x.nlargest(3).sum())
+                    .sort_values(ascending=False)
+                )
             stack_games = list(_matchup_scores.index)
-            print(f"  Stack order (top-3 FC Proj sum per game):")
+            print(f"  Stack order (FC Proj sum <$7K players per game):")
             for _m, _sc in _matchup_scores.items():
-                print(f"    {_m:<22s} top-3 sum: {_sc:.1f} pts")
+                print(f"    {_m:<22s} <$7K FC sum: {_sc:.1f} pts")
         else:
             # Fallback: game_total ordering
             _matchup_totals = (

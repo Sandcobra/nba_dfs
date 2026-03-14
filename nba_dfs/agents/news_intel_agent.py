@@ -65,7 +65,8 @@ DECAY_HALFLIFE  = 6.0     # hours; confidence halves every 6 hrs
 SCRAPE_DELAY    = 0.8     # seconds between HTTP calls
 
 SOURCE_WEIGHTS = {
-    "beat_writer": 1.15,   # X / Twitter beat writers — highest trust
+    "nbcsports":   1.10,   # NBC Sports player-news feed — primary; plain English, comprehensive
+    "beat_writer": 1.15,   # X / Twitter beat writers — fallback if NBC fails; highest trust when available
     "rotowire":    1.00,
     "espn":        1.00,
     "fantasypros":  0.90,
@@ -404,18 +405,44 @@ class NewsIntelAgent:
     # ── Fetchers ───────────────────────────────────────────────────────────────
 
     def _fetch_all(self) -> list[dict]:
-        """Fetch from all sources and return combined list of news items."""
+        """
+        Fetch from all sources and return combined list of news items.
+
+        Priority order for real-time lineup/injury news:
+          1. NBC Sports player-news feed (primary) — plain-English blurbs,
+             aggregates all wire services, no auth required.
+          2. X beat writers (fallback) — only used when NBC Sports returns
+             zero items (scrape failure, site change, etc.)
+          3. ESPN / Rotowire / FantasyPros / RotoGrinders — supplementary;
+             run regardless of primary success for additional coverage.
+        """
         items: list[dict] = []
 
-        # X beat writers first — highest credibility, most real-time
+        # ── 1. Primary: NBC Sports player-news ────────────────────────────
+        nbc_items: list[dict] = []
         try:
-            x_items = self._fetch_x_beat_writers()
-            items.extend(x_items)
-            if x_items:
-                logger.info("[news] X beat writers: %d items", len(x_items))
+            nbc_items = self._fetch_nbcsports_news()
+            items.extend(nbc_items)
+            logger.info("[news] NBC Sports: %d items", len(nbc_items))
         except Exception as exc:
-            logger.warning("[news] X beat writer fetch failed: %s", exc)
+            logger.warning("[news] NBC Sports fetch failed: %s", exc)
 
+        # ── 2. Fallback: X beat writers (only if NBC returned nothing) ────
+        if not nbc_items:
+            logger.info("[news] NBC Sports returned 0 items — falling back to X beat writers")
+            try:
+                x_items = self._fetch_x_beat_writers()
+                items.extend(x_items)
+                if x_items:
+                    logger.info("[news] X beat writers (fallback): %d items", len(x_items))
+            except Exception as exc:
+                logger.warning("[news] X beat writer fallback failed: %s", exc)
+        else:
+            # NBC succeeded — reset X stats to reflect it was skipped
+            self._x_stats["enabled"] = False
+            self._x_stats["error"] = "skipped — NBC Sports feed active"
+
+        # ── 3. Supplementary sources ──────────────────────────────────────
         for fn in (
             self._fetch_rotowire_news,
             self._fetch_espn_news,
@@ -428,6 +455,7 @@ class NewsIntelAgent:
                 time.sleep(SCRAPE_DELAY)
             except Exception as exc:
                 logger.warning("[news] %s failed: %s", fn.__name__, exc)
+
         logger.debug("[news] Fetched %d total news items", len(items))
         return items
 
@@ -568,6 +596,84 @@ class NewsIntelAgent:
         if m:
             return m.group(1).strip()
         return ""
+
+    def _fetch_nbcsports_news(self) -> list[dict]:
+        """
+        Scrape https://www.nbcsports.com/fantasy/basketball/player-news
+
+        Each article contains a player name, timestamp, and a plain-English
+        blurb with injury/lineup news — exactly the signal pros read to find
+        cheap role-change plays (Javon Small, Danny Wolf, etc.).
+
+        NBC Sports aggregates from all wire services and beat writers.
+        No authentication required. Updates throughout the day.
+        """
+        resp = self._client.get(
+            "https://www.nbcsports.com/fantasy/basketball/player-news",
+            headers={**_HEADERS, "Accept": "text/html,application/xhtml+xml"},
+        )
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items = []
+
+        # NBC Sports uses a React-rendered page; the news items are in
+        # article tags or divs with class patterns containing "PlayerNews"
+        # Try multiple selector strategies in priority order.
+        selectors = [
+            "div.PlayerNewsItem",
+            "article.PlayerNewsItem",
+            "div[class*='player-news-item']",
+            "article[class*='player-news']",
+            "div[class*='PlayerNews']",
+        ]
+        cards = []
+        for sel in selectors:
+            cards = soup.select(sel)
+            if cards:
+                break
+
+        # Fallback: any article with a recognizable player link
+        if not cards:
+            cards = soup.select("article, div.news-item")
+
+        for card in cards:
+            # Player name: linked element or heading
+            name_el = (
+                card.select_one("a[class*='playerName'], a[class*='player-name']")
+                or card.select_one("h3 a, h4 a, .player-name, .PlayerName")
+                or card.select_one("a[href*='/players/']")
+                or card.select_one("a[href*='/player/']")
+            )
+            # News text: the analysis/blurb paragraph
+            text_el = (
+                card.select_one("p[class*='analysis'], p[class*='Analysis']")
+                or card.select_one("div[class*='analysis'], div[class*='Analysis']")
+                or card.select_one("p.news-text, p.blurb, p.content")
+                or card.select_one("p")
+            )
+            # Timestamp
+            time_el = card.select_one("time, [class*='timestamp'], [class*='Timestamp'], [class*='date']")
+
+            if not name_el or not text_el:
+                continue
+
+            name = name_el.get_text(strip=True)
+            text = text_el.get_text(strip=True)
+            if not name or not text or len(text) < 10:
+                continue
+
+            ts = ""
+            if time_el:
+                ts = time_el.get("datetime", "") or time_el.get_text(strip=True)
+
+            items.append({
+                "name":        name,
+                "text":        text,
+                "source":      "nbcsports",
+                "reported_at": ts or datetime.utcnow().isoformat(),
+            })
+
+        return items
 
     def _fetch_rotowire_news(self) -> list[dict]:
         resp = self._client.get("https://www.rotowire.com/basketball/news.php")
