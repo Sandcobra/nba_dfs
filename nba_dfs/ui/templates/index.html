@@ -1961,6 +1961,7 @@ async function overrideProjection(pid, newVal) {
 // ── B2B check ────────────────────────────────────────────────────────────────
 async function checkB2B() {
   const btn = $('b2b-btn');
+  if (!btn) return;
   btn.disabled = true;
   btn.textContent = '⟳ Checking…';
   toast('Checking back-to-back schedule via ESPN…', 'info', 2000);
@@ -2246,6 +2247,7 @@ function showOnOffBoard(items, outNames) {
 // ── Check confirmed starters ────────────────────────────────────────────────
 async function checkStarters() {
   const btn = $('starters-btn');
+  if (!btn) return;
   btn.disabled  = true;
   btn.textContent = '⟳ Checking…';
   toast('Checking Rotowire for confirmed starters (ESPN fallback if unavailable)…', 'info', 2000);
@@ -2355,6 +2357,7 @@ async function checkStarters() {
 // ── Injury check ────────────────────────────────────────────────────────────
 async function checkInjuries() {
   const btn = $('injury-btn');
+  if (!btn) return;
   btn.disabled = true;
   btn.textContent = '⟳ Fetching injuries…';
   toast('Fetching injuries + computing lineup on/off splits… may take 1-2 min on first run (cached 24h after)', 'info', 90000);
@@ -2525,6 +2528,7 @@ async function handleContestUpload(input) {
 // ── Matchup Analysis ─────────────────────────────────────────────────────────
 async function loadMatchupAnalysis() {
   const btn = $('matchup-btn');
+  if (!btn) return;
   btn.disabled = true;
   btn.textContent = '⟳ Fetching…';
   toast('Fetching live NBA defensive ratings from stats.nba.com…', 'info', 3000);
