@@ -557,15 +557,22 @@ async def run_optimization(
                             print(f"[News] Bench filter removed {_drop.sum()} sub-$5K players "
                                   f"with no confirmed role")
 
-                    # Blanket FC minutes filter: remove ANY player projected < 15 minutes
-                    # regardless of salary. Salary is not a proxy for minutes.
-                    if "fc_mins" in opt_players.columns:
-                        _fc_low = opt_players["fc_mins"].notna() & (opt_players["fc_mins"] < 15)
-                        if _fc_low.any():
-                            _dropped_names = opt_players.loc[_fc_low, "name"].tolist()
-                            opt_players = opt_players[~_fc_low].copy()
-                            print(f"[Filter] Removed {len(_dropped_names)} players with FC mins < 15: "
-                                  f"{', '.join(_dropped_names[:8])}{'...' if len(_dropped_names) > 8 else ''}")
+                    # Multi-layer minutes filter using proj_mins (fc_mins → avg_pts est → salary proxy).
+                    # The old fc_mins-only check was blind to players not in FC export.
+                    _mins_col = "proj_mins" if "proj_mins" in opt_players.columns else "fc_mins"
+                    if _mins_col in opt_players.columns:
+                        _hard_low = opt_players[_mins_col].notna() & (opt_players[_mins_col] < 12)
+                        if _hard_low.any():
+                            _hn = opt_players.loc[_hard_low, "name"].tolist()
+                            opt_players = opt_players[~_hard_low].copy()
+                            print(f"[MinsFlt L1] Removed {len(_hn)} with proj_mins < 12: "
+                                  f"{', '.join(_hn[:8])}{'...' if len(_hn) > 8 else ''}")
+                        _soft_low = opt_players[_mins_col].notna() & (opt_players[_mins_col] < 15)
+                        if _soft_low.any():
+                            _sn = opt_players.loc[_soft_low, "name"].tolist()
+                            opt_players = opt_players[~_soft_low].copy()
+                            print(f"[MinsFlt L2] Removed {len(_sn)} with proj_mins < 15: "
+                                  f"{', '.join(_sn[:8])}{'...' if len(_sn) > 8 else ''}")
 
                 # Emit SSE event
                 q.put({"type": "news_intel", "data": {

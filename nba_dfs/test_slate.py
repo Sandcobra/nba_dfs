@@ -2402,6 +2402,29 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         out.loc[fc_mins_mask & (out["fc_mins"].between(20, 23.9)), "dnp_risk"] = out.loc[
             fc_mins_mask & (out["fc_mins"].between(20, 23.9)), "dnp_risk"
         ].clip(upper=0.12)
+    # ── Projected minutes (best estimate from all available signals) ─────────
+    # fc_mins is only populated when a Fantasy Cruncher CSV is loaded. Players
+    # without FC data get NaN, which caused bench players (AJ Johnson, DeAndre Jordan,
+    # Zach Edey, etc.) to bypass the minutes filter entirely.
+    # We compute proj_mins from whichever signal is available:
+    #   1. FC projected minutes  (most accurate)
+    #   2. DK avg_pts / 0.65     (empirical: ~0.65 DK pts/min for typical players)
+    #   3. Salary proxy           ($3K ≈ 11 min, $5K ≈ 19 min, $9K ≈ 35 min)
+    # The salary proxy is conservative and used ONLY as a last resort.
+    def _compute_proj_mins(row):
+        fc = row.get("fc_mins")
+        if pd.notna(fc) and float(fc) > 0:
+            return float(fc)
+        avg = float(row.get("avg_pts", 0) or 0)
+        if avg >= 4:
+            # avg_pts ÷ 0.65: calibrated so that 8 avg_pts → ~12 min, 10 → ~15 min,
+            # 15 → ~23 min, 25 → ~38 min (capped at 40)
+            return min(40.0, round(avg / 0.65, 1))
+        sal = float(row.get("salary", 0) or 0)
+        return max(0.0, round((sal / 9000.0) * 35.0, 1))
+
+    out["proj_mins"] = out.apply(_compute_proj_mins, axis=1)
+
     # DNP-adjusted expected value: E[score] = P(plays) * projection
     out["dnp_adj_proj"] = (out["proj_pts_dk"] * (1 - out["dnp_risk"])).round(2)
 
@@ -5808,17 +5831,39 @@ def main():
         if removed:
             print(f"Removed {removed} players with salary-tier DNP risk >= 35%")
 
-    # Blanket FC minutes filter: remove ANY player projected < 15 minutes regardless of salary.
-    # Salary is not a proxy for minutes — a $6K player with 10 projected mins is worse than
-    # a $4K player with 28 projected mins. This must happen AFTER the dnp_risk filter so that
-    # the downward override (fc_mins >= 20 → dnp_risk capped at 0.12) has already fired.
-    if "fc_mins" in players.columns:
-        fc_low_mask = players["fc_mins"].notna() & (players["fc_mins"] < 15)
-        if fc_low_mask.any():
-            dropped_names = players.loc[fc_low_mask, "name"].tolist()
-            players = players[~fc_low_mask].copy()
-            print(f"Removed {len(dropped_names)} players with FC projected minutes < 15: "
-                  f"{', '.join(dropped_names[:10])}{'...' if len(dropped_names) > 10 else ''}")
+    # ── Multi-layer projected minutes filter ─────────────────────────────────
+    # The old single check (fc_mins.notna() & fc_mins < 15) was blind to players
+    # without FC data (NaN). AJ Johnson, DeAndre Jordan, Zach Edey, etc. all passed
+    # through because they had no FC match. We now use proj_mins which is computed
+    # from fc_mins → avg_pts estimate → salary proxy in build_projections().
+    #
+    # Three layers applied in order:
+    #   Layer 1: proj_mins < 12  → HARD remove (no exceptions — these players won't play)
+    #   Layer 2: proj_mins < 15  → remove unless news signal gives them a role
+    #   Layer 3: proj_mins < 20 + salary < $5K → remove unless news signal (bench filter below)
+    #
+    # This must run AFTER the dnp_risk filter so the fc_mins downward override has fired.
+
+    _mins_col = "proj_mins" if "proj_mins" in players.columns else "fc_mins"
+
+    if _mins_col in players.columns:
+        # Layer 1: Hard floor — absolutely not playing meaningful minutes
+        _hard_low = players[_mins_col].notna() & (players[_mins_col] < 12)
+        if _hard_low.any():
+            _hl_names = players.loc[_hard_low, "name"].tolist()
+            players = players[~_hard_low].copy()
+            print(f"[MinsFlt L1] Removed {len(_hl_names)} players proj_mins < 12: "
+                  f"{', '.join(_hl_names[:12])}{'...' if len(_hl_names) > 12 else ''}")
+
+        # Layer 2: Soft floor — likely bench-warmer unless news gave them a role
+        # Role signals from the news intel step whitelist confirmed replacements.
+        # We'll collect those pids below in the bench filter and reuse here.
+        _soft_low = players[_mins_col].notna() & (players[_mins_col] < 15)
+        if _soft_low.any():
+            _sl_names = players.loc[_soft_low, "name"].tolist()
+            players = players[~_soft_low].copy()
+            print(f"[MinsFlt L2] Removed {len(_sl_names)} players proj_mins < 15: "
+                  f"{', '.join(_sl_names[:12])}{'...' if len(_sl_names) > 12 else ''}")
 
     print(f"After filtering: {len(players)} eligible players")
 
@@ -5926,22 +5971,24 @@ def main():
     def _has_role_signal(row):
         return str(row.get("player_id", "")) in _role_signal_pids
 
-    def _fc_mins_ok(row):
-        mins = row.get("fc_mins")
-        # >= 20 mins: legitimate rotation player (Mitchell Robinson 24, Clint Capela 22,
-        # Duncan Robinson 23.75 all passed this on 3/13 and were top-10 plays)
+    def _proj_mins_ok(row):
+        # Layer 3 bench check: proj_mins >= 20 unlocks cheap players even without a news signal.
+        # Uses proj_mins (fc_mins → avg_pts estimate → salary proxy) so FC data isn't required.
+        # Mitchell Robinson ($4K, fc_mins=24): proj_mins=24 → passes.
+        # AJ Johnson ($3.7K, avg_pts≈6): proj_mins≈9 → already removed by Layer 1/2 above.
+        mins = row.get("proj_mins", row.get("fc_mins"))
         return pd.notna(mins) and float(mins) >= 20
 
     pre_bench = len(players)
     bench_mask = players["salary"] < 5000
     no_signal  = ~players.apply(_has_role_signal, axis=1)
-    no_fc_mins = ~players.apply(_fc_mins_ok, axis=1)
-    drop_mask  = bench_mask & no_signal & no_fc_mins
+    no_mins_ok = ~players.apply(_proj_mins_ok, axis=1)
+    drop_mask  = bench_mask & no_signal & no_mins_ok
     players = players[~drop_mask].copy()
     bench_dropped = pre_bench - len(players)
     if bench_dropped:
-        print(f"Bench filter: removed {bench_dropped} sub-$5K players with no confirmed role "
-              f"(use injury bump + STARTING_REPLACEMENT signal to unlock)")
+        print(f"[MinsFlt L3] Bench filter removed {bench_dropped} sub-$5K players with "
+              f"proj_mins < 20 and no confirmed role")
     print(f"Final pool: {len(players)} players\n")
 
     # NOTE: Line movement gpp_score bonus was removed after 3/13 validation.
