@@ -3359,6 +3359,7 @@ def generate_gpp_lineups(
     slate_profile: dict = None,
     ownership_penalty: float = 0.04,
     max_exposure: int = None,   # ignored — exposure is now template-driven
+    pool_size: int = None,      # ignored — pool size is slate-regime-driven internally
 ) -> list[dict]:
     """
     Pro-mirroring GPP portfolio builder.
