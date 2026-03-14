@@ -2699,7 +2699,6 @@ def build_lineup(
     max_per_team: int = MAX_PER_TEAM,
     ownership_penalty: float = 0.04,
     stack_game: str = None,
-    second_game: str = None,         # #2 ranked game — hard ILP constraint requires >=1 player from here
     stack_bonus: float = 0.12,
     bringback_bonus: float = 0.06,
     force_stack: bool = True,        # add hard ILP constraint (>=3 from stack_game); set False in fallbacks
@@ -2718,22 +2717,6 @@ def build_lineup(
     stack_bonus:   Multiplier bonus applied to same-stack-game players (12% by default).
     bringback_bonus: Bonus for opponent players in the stack game (6% — game stack).
     """
-    # Hard minutes floor — strip sub-24 min players right here before ILP builds.
-    # Expansion plays (fc_mins_expansion >= 1.50 AND fc_proj >= 15) are exempt.
-    if "proj_mins" in players.columns:
-        _pm = players["proj_mins"].fillna(0)
-        _exempt = (
-            (players.get("fc_mins_expansion", pd.Series(1.0, index=players.index)).fillna(1.0) >= 1.50)
-            & (players.get("fc_proj", pd.Series(0, index=players.index)).fillna(0) >= 15)
-        )
-        _keep = (_pm >= 24) | _exempt
-        # Never drop locked players — respect explicit user locks
-        if locked_ids:
-            _locked_set = set(str(lid) for lid in locked_ids)
-            _is_locked = players["player_id"].astype(str).isin(_locked_set)
-            _keep = _keep | _is_locked
-        players = players[_keep].reset_index(drop=True)
-
     prob = pulp.LpProblem("DFS_Lineup", pulp.LpMaximize)
     n    = len(players)
     idx  = list(range(n))
@@ -2875,16 +2858,6 @@ def build_lineup(
         ]
         if len(_non_excl_sg) >= 3:
             prob += pulp.lpSum(x[i] for i in _hard_sg_idx) >= 3
-
-    # Second game guarantee: every lineup must have >=1 player from the #2 ranked game.
-    # Cross-slate data (7 slates, 793 top-1% lineups): #2 game had 84-100% coverage
-    # every single slate. On 3/13 we had 0% NYK@IND exposure — the single biggest miss.
-    if second_game and second_game != stack_game and "matchup" in players.columns:
-        _sg2_idx = [i for i in idx if players["matchup"].iloc[i] == second_game]
-        _excl_set_sg2 = set(str(p) for p in (excluded_ids or []))
-        _sg2_non_excl = [i for i in _sg2_idx if str(players["player_id"].iloc[i]) not in _excl_set_sg2]
-        if len(_sg2_non_excl) >= 1:
-            prob += pulp.lpSum(x[i] for i in _sg2_idx) >= 1
 
     # Salary barbell structure: driven by SlateConstructionAgent parameters.
     # Thresholds and minimums are adaptive to tonight's slate salary distribution.
@@ -3451,14 +3424,12 @@ def generate_gpp_lineups(
             else:
                 _dvp_mult = 1.0
 
-            # Component 3: injury-value bonus — game gets +5-8% when a player
-            # under $6K has fc_proj significantly above their avg_pts (signal that
-            # they're filling in for an OUT starter with expanded minutes).
-            # Threshold raised from $4.5K to $6K: promoted starters like Mitchell
-            # Robinson ($4K replacing KAT) qualify, as do $5-5.5K backup starters.
+            # Component 3: injury-value bonus — game gets +5-8% when a cheap
+            # player (<$4.5K) has fc_proj significantly above their avg_pts
+            # (signal that they're filling in for an OUT starter)
             _injury_bonus = 1.0
             if "fc_proj" in players.columns and "avg_pts" in players.columns:
-                _cheap_gp = _gp[_gp["salary"] <= 6000]
+                _cheap_gp = _gp[_gp["salary"] <= 4500]
                 for _, _cp in _cheap_gp.iterrows():
                     _fc = float(_cp.get("fc_proj", 0) or 0)
                     _avg = float(_cp.get("avg_pts", 0) or 0)
@@ -3612,7 +3583,7 @@ def generate_gpp_lineups(
             eligible = eligible[eligible[dnp_col] < 0.25]
         mins_col = "fc_mins" if "fc_mins" in df.columns else None
         if mins_col:
-            eligible = eligible[eligible[mins_col].fillna(0) >= 24]
+            eligible = eligible[eligible[mins_col].fillna(0) >= 15]
         if eligible.empty:
             return []
 
@@ -3666,11 +3637,6 @@ def generate_gpp_lineups(
         game_players = df[df["matchup"] == game].copy()
         if "dnp_risk" in game_players.columns:
             game_players = game_players[game_players["dnp_risk"] < 0.50]
-        # Enforce 24-min floor within the stack pool (player pool should already be filtered,
-        # but guard here in case called with a raw DataFrame)
-        _mins_c = "proj_mins" if "proj_mins" in game_players.columns else ("fc_mins" if "fc_mins" in game_players.columns else None)
-        if _mins_c:
-            game_players = game_players[game_players[_mins_c].fillna(0) >= 24]
         if game_players.empty:
             return []
 
@@ -3729,29 +3695,6 @@ def generate_gpp_lineups(
             own = r.get("fc_own", float("nan"))
             gpp_str = f"  gpp={gpp:.1f}  exp={exp:.2f}x  own={own:.0f}%" if not pd.isna(gpp) else ""
             print(f"    {r.get('name', pid):<28s} ${r.get('salary',0):,}  proj={r.get('proj_pts_dk',0):.1f}{gpp_str}")
-
-    # ── Filter top_stack_pool to PRIMARY TEAM only ───────────────────────────
-    # Cross-slate data (7 slates): top-1% lineups stack a SINGLE team 3-4 deep.
-    # Pool includes both teams by default — filter to the team with higher avg proj
-    # so all 4-man combos are same-team stacks (e.g. all HOU, never 2HOU+2NOP).
-    _primary_stack_team = None
-    if top_game and "matchup" in players.columns:
-        _tg_df = players[players["matchup"] == top_game]
-        _team_avg_proj = _tg_df.groupby("team")["proj_pts_dk"].mean()
-        if len(_team_avg_proj) >= 2:
-            _primary_stack_team = _team_avg_proj.idxmax()
-            _primary_pool = [
-                pid for pid in top_stack_pool
-                if not players[players["player_id"].astype(str) == pid].empty
-                and players[players["player_id"].astype(str) == pid].iloc[0].get("team") == _primary_stack_team
-            ]
-            if len(_primary_pool) >= 4:
-                top_stack_pool = _primary_pool
-                print(f"  Primary stack team: {_primary_stack_team} "
-                      f"({len(_primary_pool)} players -> single-team 4-man combos)")
-            else:
-                print(f"  [WARN] Primary team {_primary_stack_team} has only {len(_primary_pool)} "
-                      f"players in pool — keeping full game pool for feasibility")
 
     # Generate all 4-man combinations from the top stack pool
     # Prefer combos that don't overlap with core plays (avoid salary concentration)
@@ -3895,11 +3838,6 @@ def generate_gpp_lineups(
                     _penalty = min(0.85, _excess * 2.5)
                     _players_lp.at[_i, "gpp_score"] = max(0.1, _row["gpp_score"] * (1 - _penalty))
 
-        # second_game for this template: Template B already stacks second_game,
-        # so its second_game constraint points back at top_game (guarantees cross-game coverage).
-        # Template A and C: second_game constraint enforces >=1 from #2 game.
-        _second_game_constraint = second_game if tmpl["type"] != "B" else top_game
-
         result = build_lineup(
             _players_lp,
             objective_col="gpp_score",
@@ -3909,7 +3847,6 @@ def generate_gpp_lineups(
             excluded_ids=t_excl,
             ownership_penalty=0.03,
             stack_game=t_game,
-            second_game=_second_game_constraint,
             stack_bonus=0.20,
             bringback_bonus=0.10,
             force_stack=t_force,
@@ -3931,7 +3868,6 @@ def generate_gpp_lineups(
                 excluded_ids=t_excl,
                 ownership_penalty=0.02,
                 stack_game=t_game,
-                second_game=_second_game_constraint,
                 stack_bonus=0.20,
                 bringback_bonus=0.10,
                 force_stack=t_force,
@@ -3941,7 +3877,7 @@ def generate_gpp_lineups(
                 base_proj_vals=_base_proj,
             )
 
-        # Fallback 2: drop combo locks + second_game constraint — last resort for feasibility
+        # Fallback 2: drop combo locks, keep global locks + diversity via score penalties
         if result is None:
             print(f"  [fallback-2] LU{lu_num+1}: drop combo locks, diversity via score penalty")
             result = build_lineup(
@@ -3953,7 +3889,6 @@ def generate_gpp_lineups(
                 excluded_ids=t_excl,
                 ownership_penalty=0.01,
                 stack_game=t_game,
-                second_game=None,
                 stack_bonus=0.20,
                 bringback_bonus=0.10,
                 force_stack=False,
@@ -5263,14 +5198,12 @@ def print_slate_analysis(players: pd.DataFrame):
 
     print(f"\nTOP 20 PROJECTIONS:")
     print(f"  {'Name':<26s} {'Team':<5s} {'Pos':<6s} {'Salary':>7s}  "
-          f"{'Proj':>6s}  {'Ceil':>6s}  {'Mins':>5s}  {'Value':>6s}  {'Est Own':>7s}")
-    print("  " + "-"*76)
-    _pm_col = "proj_mins" if "proj_mins" in players.columns else ("fc_mins" if "fc_mins" in players.columns else None)
+          f"{'Proj':>6s}  {'Ceil':>6s}  {'Value':>6s}  {'Est Own':>7s}")
+    print("  " + "-"*70)
     for _, r in players.head(20).iterrows():
-        _mins_str = f"{r[_pm_col]:>5.1f}" if _pm_col and pd.notna(r.get(_pm_col)) else "  n/a"
         print(f"  {r['name']:<26s} {r['team']:<5s} {r['primary_position']:<6s} "
               f"${r['salary']:>6,}  {r['proj_pts_dk']:>6.1f}  {r['ceiling']:>6.1f}  "
-              f"{_mins_str}  {r['value']:>6.2f}x  {r['proj_own']:>5.1f}%")
+              f"{r['value']:>6.2f}x  {r['proj_own']:>5.1f}%")
 
     print(f"\nTOP VALUE PLAYS (proj/salary ratio):")
     top_val = players[players["salary"] >= 4000].nlargest(10, "value")
@@ -6131,49 +6064,31 @@ def main():
         if removed:
             print(f"Removed {removed} players with salary-tier DNP risk >= 35%")
 
-    # ── 24-minute hard floor ──────────────────────────────────────────────────
-    # Players projecting fewer than 24 minutes are removed from the pool.
-    # Uses proj_mins (fc_mins when available, salary proxy otherwise).
-    # NaN is treated as 0 — unknown = assume bench = remove.
-    # Must run AFTER the dnp_risk filter so fc_mins downward overrides have fired.
+    # ── Multi-layer projected minutes filter ─────────────────────────────────
+    # The old single check (fc_mins.notna() & fc_mins < 15) was blind to players
+    # without FC data (NaN). AJ Johnson, DeAndre Jordan, Zach Edey, etc. all passed
+    # through because they had no FC match. We now use proj_mins which is computed
+    # from fc_mins → avg_pts estimate → salary proxy in build_projections().
+    #
+    # Three layers applied in order:
+    #   Layer 1: proj_mins < 12  → HARD remove (no exceptions — these players won't play)
+    #   Layer 2: proj_mins < 15  → remove unless news signal gives them a role
+    #   Layer 3: proj_mins < 20 + salary < $5K → remove unless news signal (bench filter below)
+    #
+    # This must run AFTER the dnp_risk filter so the fc_mins downward override has fired.
 
-    # ── Hard 24-minute floor ──────────────────────────────────────────────────
-    # Every player in the pool must project for >= 24 minutes.
-    # NaN is treated as 0 (fillna) — unknown minutes = assume bench = remove.
-    # Exception: confirmed injury-replacement plays (fc_mins_expansion >= 1.5
-    # AND fc_proj >= 15) are allowed through regardless of season-avg minutes.
-    _mins_col = "proj_mins" if "proj_mins" in players.columns else (
-                "fc_mins"   if "fc_mins"   in players.columns else None)
+    _mins_col = "proj_mins" if "proj_mins" in players.columns else "fc_mins"
 
-    if _mins_col:
-        _mins_vals = players[_mins_col].fillna(0)   # NaN → 0 → below threshold → removed
-
-        _expansion_exempt = pd.Series(False, index=players.index)
-        if "fc_mins_expansion" in players.columns and "fc_proj" in players.columns:
-            _expansion_exempt = (
-                (players["fc_mins_expansion"].fillna(1.0) >= 1.50)
-                & (players["fc_proj"].fillna(0) >= 15)
-            )
-
-        _keep = (_mins_vals >= 24) | _expansion_exempt
-        _removed = players[~_keep]
-        if not _removed.empty:
-            _rl = _removed["name"].tolist()
-            print(f"[MinsFlt] Removed {len(_rl)} players with proj_mins < 24: "
-                  f"{', '.join(_rl[:15])}{'...' if len(_rl) > 15 else ''}")
-        _exempted = players[_expansion_exempt & ~(_mins_vals >= 24)]
-        if not _exempted.empty:
-            print(f"[MinsFlt] Kept {len(_exempted)} expansion plays despite < 24 season-avg mins: "
-                  f"{', '.join(_exempted['name'].tolist())}")
-        players = players[_keep].copy()
-    else:
-        # No minutes column at all — fall back to salary proxy: keep players >= $6200
-        # ($6200 / 9000 * 35 = 24.1 min)
-        _sal_keep = players["salary"] >= 6200
-        _removed_n = (~_sal_keep).sum()
-        if _removed_n:
-            print(f"[MinsFlt] No proj_mins column — removed {_removed_n} players with salary < $6,200")
-        players = players[_sal_keep].copy()
+    if _mins_col in players.columns:
+        # Layer 1: Hard cutoff — salary proxy puts them at < 16 min → almost certainly bench depth.
+        # With salary proxy (sal/9000)*35: $4K → 15.6 min, $4.1K → 15.9 min.
+        # Setting threshold at 16 catches all sub-$4.1K players without FC data.
+        _hard_low = players[_mins_col].notna() & (players[_mins_col] < 16)
+        if _hard_low.any():
+            _hl_names = players.loc[_hard_low, "name"].tolist()
+            players = players[~_hard_low].copy()
+            print(f"[MinsFlt L1] Removed {len(_hl_names)} players proj_mins < 16: "
+                  f"{', '.join(_hl_names[:12])}{'...' if len(_hl_names) > 12 else ''}")
 
     print(f"After filtering: {len(players)} eligible players")
 
@@ -6355,26 +6270,13 @@ def main():
         "avg_pts", "proj_pts_dk", "ceiling", "floor",
         "value", "proj_own", "gpp_score", "matchup", "game_total",
     ]
-    # Always include projected minutes — sort by this column to find sub-24 min players
-    for _mc in ["proj_mins", "fc_mins"]:
-        if _mc in players.columns:
-            proj_cols.append(_mc)
-    for _sig in ["fc_mins_expansion", "boom_rate", "variance_ratio", "is_volatile",
-                 "game_env_mult", "salary_gap", "on_off_boost"]:
+    for _sig in ["boom_rate", "variance_ratio", "is_volatile", "game_env_mult", "salary_gap", "on_off_boost"]:
         if _sig in players.columns:
             proj_cols.append(_sig)
     if "dnp_risk" in players.columns:
         proj_cols.append("dnp_risk")
-    _proj_df = players[[c for c in proj_cols if c in players.columns]].copy()
-    # excl column: fill with "x" next to any player you want excluded, then
-    # pass this file back via --excl-csv flag (not yet wired) or manually note player_ids.
-    # Sort by proj_mins ascending so sub-24 players float to the top for easy review.
-    _sort_col = "proj_mins" if "proj_mins" in _proj_df.columns else ("fc_mins" if "fc_mins" in _proj_df.columns else "proj_pts_dk")
-    _proj_df = _proj_df.sort_values(_sort_col, ascending=True)
-    _proj_df.insert(0, "excl", "")
-    _proj_df.to_csv(proj_path, index=False)
+    players[proj_cols].to_csv(proj_path, index=False)
     print(f"Projections CSV saved: {proj_path}")
-    print(f"  -> Sorted by {_sort_col} ascending. Mark 'x' in 'excl' column for players to exclude.")
 
     # 7b. Print DNP risk warnings for the top pool players
     if "dnp_risk" in players.columns:
@@ -6447,110 +6349,5 @@ def main():
             )
 
 
-def late_swap_main():
-    """
-    Late swap workflow.
-
-    Run after early games have started:
-        python -m nba_dfs.test_slate --late-swap
-
-    Workflow:
-      1. Load the DK salary file (same SALARY_FILE constant)
-      2. Load the latest FC file (updated projections post-lineup-lock)
-      3. Load previously submitted lineups from the most recent dk_entries CSV
-      4. Detect which teams are locked (game already started via ESPN scoreboard)
-      5. Re-optimize unlocked slots with contest-aware scoring
-      6. Export a new DK-uploadable CSV  →  upload this to DK to complete late swap
-    """
-    print("\nNBA DFS -- LATE SWAP MODE")
-    print("=" * 60)
-
-    # ── 1. Load salary file ───────────────────────────────────────────────────
-    if not SALARY_FILE.exists():
-        print(f"ERROR: {SALARY_FILE} not found")
-        sys.exit(1)
-    raw = parse_salary_file(SALARY_FILE)
-    print(f"Loaded {len(raw)} players from {SALARY_FILE.name}")
-
-    # ── 2. Load latest FC file ────────────────────────────────────────────────
-    _fc_data = load_fc_data()
-    if _fc_data is not None:
-        raw = _merge_fc(raw, _fc_data)
-        print(f"FC data loaded: {raw['fc_proj'].notna().sum()}/{len(raw)} players matched")
-    else:
-        print("[warn] No FC file found — late swap using model-only projections")
-
-    # ── 3. Build projections ──────────────────────────────────────────────────
-    players = build_projections(raw)
-    players = players[players["proj_pts_dk"] > 0].copy()
-
-    # Apply injury status updates
-    try:
-        from data.injury_scraper import InjuryScraper
-        _sc = InjuryScraper()
-        _records = _sc.scrape_espn()
-        _sc.close()
-        inj_map = {r["name"]: r["status"] for r in _records}
-        players = apply_status_updates(players, inj_map)
-        out_ct = sum(1 for s in inj_map.values() if s == "OUT")
-        print(f"Injury update: {out_ct} OUT players removed")
-    except Exception as _e:
-        print(f"[warn] Injury scraper failed: {_e}")
-
-    # ── 4. Load previously submitted lineups ──────────────────────────────────
-    contest_dir = Path(__file__).parent.parent / "contest"
-    entry_files = sorted(contest_dir.glob("dk_entries_*.csv"), reverse=True)
-    if not entry_files:
-        print("ERROR: No dk_entries_*.csv found in contest/ folder.")
-        print("       Copy your DK submitted entries CSV into contest/ first.")
-        sys.exit(1)
-
-    entries_path = entry_files[0]
-    print(f"Loading submitted lineups from: {entries_path.name}")
-    lineups, warnings = parse_lineup_csv(entries_path, players)
-    for w in warnings:
-        print(f"  [warn] {w}")
-    print(f"  Loaded {len(lineups)} lineup(s)")
-
-    if not lineups:
-        print("ERROR: No lineups parsed from entries file.")
-        sys.exit(1)
-
-    # ── 5. Detect locked teams (games that have started) ─────────────────────
-    locked_teams = get_locked_teams()
-    if locked_teams:
-        print(f"Locked teams (game started): {', '.join(sorted(locked_teams))}")
-    else:
-        print("[warn] Could not detect locked teams — treating all as unlocked")
-
-    # ── 6. Re-optimize unlocked slots ────────────────────────────────────────
-    print("\nRunning contest-aware late swap optimization...")
-    swapped = contest_mode_late_swap(lineups, players, locked_teams)
-
-    # Count actual swaps made
-    n_swaps = sum(
-        1 for orig, new in zip(lineups, swapped)
-        if set(orig["player_ids"]) != set(new["player_ids"])
-    )
-    print(f"  Swaps made: {n_swaps} lineup(s) updated")
-
-    # ── 7. Export new DK upload CSV ───────────────────────────────────────────
-    today_str = date.today().strftime("%m%d")
-    swap_path = OUTPUT_DIR / f"dk_lateswap_{today_str}.csv"
-    export_dk_csv(swapped, players, swap_path)
-    print(f"\nLate swap CSV saved: {swap_path}")
-    print("\nNEXT STEPS:")
-    print("  1. Go to your DraftKings contest")
-    print("  2. Click 'Edit Lineup' on any entry")
-    print("  3. Click 'Upload Previous Lineups'")
-    print(f"  4. Upload:  {swap_path}")
-    print("  5. Verify swaps look correct before confirming")
-    print("=" * 60)
-
-
 if __name__ == "__main__":
-    import sys as _sys_check
-    if "--late-swap" in _sys_check.argv:
-        late_swap_main()
-    else:
-        main()
+    main()
