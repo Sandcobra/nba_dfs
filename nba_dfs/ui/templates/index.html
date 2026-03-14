@@ -1204,44 +1204,6 @@ function renderOverview(data) {
       </div>`;
   });
 
-  // Positional scarcity
-  renderScarcity(data.positional_scarcity || {});
-}
-
-function renderScarcity(sc) {
-  if (!sc || !Object.keys(sc).length) return;
-  const card = $('scarcity-card');
-  card.style.display = 'block';
-
-  const slots   = ['PG','SG','SF','PF','C','G','F','UTIL'];
-  const scarce  = sc.scarce_slots || [];
-  const score   = sc.scarcity_score || 0;
-
-  // Badge
-  const badge = $('scarcity-badge');
-  if (score === 0)       { badge.textContent='Normal'; badge.style.background='rgba(0,209,122,.15)'; badge.style.color='var(--green)'; }
-  else if (score <= 0.25){ badge.textContent='Mild';   badge.style.background='rgba(255,180,0,.15)'; badge.style.color='#ffb400'; }
-  else                   { badge.textContent='SCARCE'; badge.style.background='rgba(255,80,80,.15)'; badge.style.color='var(--red)'; }
-
-  // Slot pills
-  const slotsEl = $('scarcity-slots');
-  slotsEl.innerHTML = slots.map(slot => {
-    const n       = sc[slot] ?? '?';
-    const isScarce= scarce.includes(slot);
-    const bg      = isScarce ? 'rgba(255,80,80,.12)' : 'rgba(0,209,122,.08)';
-    const color   = isScarce ? 'var(--red)'          : 'var(--green)';
-    const border  = isScarce ? 'rgba(255,80,80,.3)'  : 'rgba(0,209,122,.25)';
-    return `<div style="padding:4px 10px;border-radius:5px;font-size:12px;font-weight:600;
-                        background:${bg};color:${color};border:1px solid ${border}">
-              ${slot}: ${n}
-            </div>`;
-  }).join('');
-
-  // Notes
-  const notes = sc.construction_notes || [];
-  $('scarcity-notes').innerHTML = notes.length
-    ? notes.map(n => `• ${n}`).join('<br>')
-    : 'All positions have sufficient depth.';
 }
 
 // ── Player table ───────────────────────────────────────────────────────────
@@ -1527,7 +1489,7 @@ async function runOptimizer() {
   state.sse.onmessage = async (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'slate_profile') {
-      renderSlateProfile(msg.profile);
+      // AI Construction Insight card removed — profile data logged only
       const p = msg.profile;
       log(`AI Slate: ${p.rationale}`, 'info');
       if (p.key_opportunities && p.key_opportunities.length)
@@ -1676,42 +1638,7 @@ async function runOptimizer() {
   };
 }
 
-// ── Slate AI Construction Profile card ────────────────────────────────────
-function renderSlateProfile(p) {
-  if (!p) return;
-  const card = $('slate-ai-card');
-  card.style.display = 'block';
-
-  $('slate-ai-source').textContent = p.source === 'claude-ai' ? '✦ AI' : '⚙ rule-based';
-  $('slate-ai-rationale').textContent = p.rationale || '';
-
-  const oppsList = $('slate-ai-opps');
-  oppsList.innerHTML = (p.key_opportunities || []).map(o => `<li>${o}</li>`).join('') || '<li>—</li>';
-
-  const risksList = $('slate-ai-risks');
-  risksList.innerHTML = (p.key_risks || []).map(r => `<li>${r}</li>`).join('') || '<li>—</li>';
-
-  // Parameter tags
-  const tagEl = (id, text, ok) => {
-    const el = $(id);
-    el.textContent = text;
-    el.style.background = ok ? 'rgba(0,209,122,.12)' : 'rgba(255,80,80,.10)';
-    el.style.color       = ok ? 'var(--green)'        : 'var(--red)';
-    el.style.border      = `1px solid ${ok ? 'rgba(0,209,122,.3)' : 'rgba(255,80,80,.25)'}`;
-    el.style.borderRadius = '4px';
-    el.style.padding = '3px 8px';
-  };
-  tagEl('slate-ai-barbell', p.barbell_enabled ? `Barbell ON ($${p.stud_threshold?.toLocaleString()}+ / $${p.cheap_threshold?.toLocaleString()}-)` : 'Barbell OFF', p.barbell_enabled);
-  tagEl('slate-ai-exposure', `Max exposure: ${Math.round((p.max_exposure_pct||0.33)*100)}%`, true);
-  tagEl('slate-ai-stack',    `Stack: ${(p.stack_emphasis||'medium').toUpperCase()}`, p.stack_emphasis === 'high');
-  tagEl('slate-ai-studs',    `Min studs: ${p.stud_min ?? 2}`, (p.stud_min ?? 2) >= 1);
-  tagEl('slate-ai-cheap',    `Min cheap: ${p.cheap_min ?? 3}`, (p.cheap_min ?? 3) >= 2);
-
-  // Also switch to Overview tab so user sees the card
-  if (!document.querySelector('#tab-overview.active')) {
-    switchTab('overview');
-  }
-}
+// renderSlateProfile removed — AI Construction Insight card deleted from UI
 
 // ── Load & render lineups ──────────────────────────────────────────────────
 async function loadLineups() {
