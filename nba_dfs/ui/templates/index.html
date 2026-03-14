@@ -1171,13 +1171,8 @@ async function uploadFile(file) {
     $('status-label').textContent = data.player_count + ' players';
     $('badge-players').textContent = data.player_count;
     $('run-btn').disabled = false;
-    $('b2b-btn').disabled = false;
-    $('injury-btn').disabled = false;
-    $('starters-btn').disabled = false;
     $('lineup-upload-btn').disabled = false;
     $('contest-upload-btn').disabled = false;
-    $('vegas-btn').disabled = false;
-    $('matchup-btn').disabled = false;
 
     renderOverview(data);
     renderPlayerTable(state.players);
