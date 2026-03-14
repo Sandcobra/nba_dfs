@@ -1744,6 +1744,91 @@ def _load_espn_mismatch_signals(cutoff_date: str = "") -> dict:
     return signals
 
 
+def load_fc_data(fc_path: "Path | str | None" = None) -> "pd.DataFrame | None":
+    """
+    Load a Fantasy Cruncher CSV export (header row 2) and return a clean DataFrame
+    with columns: fc_name, fc_proj, fc_own, fc_mins, fc_floor, fc_ceiling.
+
+    Fantasy Cruncher CSV has two header rows:
+      Row 1: section labels (Game and Vegas, Player Averages - Season, etc.)
+      Row 2: actual column names (Player, Salary, Proj Own%, Proj Mins, FC Proj, Floor, Ceiling...)
+
+    Returns None if path not found or parsing fails.
+    """
+    import glob as _glob
+    if fc_path is None:
+        # Auto-discover: look for draftkings_NBA_*.csv in contest/ folder
+        contest_dir = Path(__file__).parent.parent / "contest"
+        matches = sorted(_glob.glob(str(contest_dir / "draftkings_NBA_*.csv")))
+        if not matches:
+            return None
+        fc_path = matches[-1]   # most recent file
+
+    try:
+        fc_path = Path(fc_path)
+        if not fc_path.exists():
+            return None
+        df = pd.read_csv(fc_path, header=1, encoding="utf-8-sig")
+        # Normalize column names
+        df.columns = [str(c).strip() for c in df.columns]
+        required = {"Player", "FC Proj", "Proj Own%", "Proj Mins"}
+        if not required.issubset(df.columns):
+            return None
+        out = pd.DataFrame()
+        out["fc_name"]    = df["Player"].astype(str).str.strip()
+        out["fc_proj"]    = pd.to_numeric(df["FC Proj"], errors="coerce")
+        out["fc_own"]     = (
+            df["Proj Own%"].astype(str).str.rstrip("%")
+            .pipe(pd.to_numeric, errors="coerce")
+        )
+        out["fc_mins"]    = pd.to_numeric(df["Proj Mins"], errors="coerce")
+        out["fc_floor"]   = pd.to_numeric(df.get("Floor",   pd.Series(dtype=float)), errors="coerce")
+        out["fc_ceiling"] = pd.to_numeric(df.get("Ceiling", pd.Series(dtype=float)), errors="coerce")
+        # Drop rows with no usable projection
+        out = out[out["fc_proj"].notna() & (out["fc_proj"] > 0)].copy()
+        return out
+    except Exception as _exc:
+        logging.warning("[fc] Failed to load FC data from %s: %s", fc_path, _exc)
+        return None
+
+
+def _merge_fc(players: pd.DataFrame, fc: "pd.DataFrame | None") -> pd.DataFrame:
+    """
+    Merge Fantasy Cruncher data into player pool by fuzzy name match.
+    Adds columns: fc_proj, fc_own, fc_mins, fc_floor, fc_ceiling.
+    Players with no FC match get NaN in those columns.
+    """
+    if fc is None or fc.empty:
+        for col in ("fc_proj", "fc_own", "fc_mins", "fc_floor", "fc_ceiling"):
+            players[col] = float("nan")
+        return players
+
+    from difflib import get_close_matches as _gcm
+
+    fc_name_lc = {n.lower(): i for i, n in enumerate(fc["fc_name"])}
+    fc_cols = ["fc_proj", "fc_own", "fc_mins", "fc_floor", "fc_ceiling"]
+    for col in fc_cols:
+        players[col] = float("nan")
+
+    for pidx, row in players.iterrows():
+        name_lc = str(row.get("name", "")).lower().strip()
+        # Exact match first
+        fi = fc_name_lc.get(name_lc)
+        if fi is None:
+            # Fuzzy match
+            close = _gcm(name_lc, list(fc_name_lc.keys()), n=1, cutoff=0.82)
+            if close:
+                fi = fc_name_lc[close[0]]
+        if fi is not None:
+            fc_row = fc.iloc[fi]
+            for col in fc_cols:
+                players.at[pidx, col] = fc_row[col]
+
+    matched = players["fc_proj"].notna().sum()
+    logging.info("[fc] Merged FC data: %d / %d players matched", matched, len(players))
+    return players
+
+
 def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     """
     Enhanced projections using:
@@ -1996,6 +2081,20 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     )
     out["floor"] = (out["proj_pts_dk"] - 1.28 * out["proj_std"]).clip(0).round(2)
 
+    # Blend FC floor/ceiling when available — FC uses actual pace/matchup data
+    if "fc_ceiling" in out.columns:
+        has_fc_ceil = out["fc_ceiling"].notna() & (out["fc_ceiling"] > 0)
+        out.loc[has_fc_ceil, "ceiling"] = (
+            out.loc[has_fc_ceil, "fc_ceiling"] * 0.65 +
+            out.loc[has_fc_ceil, "ceiling"]    * 0.35
+        ).round(2)
+    if "fc_floor" in out.columns and "floor" in out.columns:
+        has_fc_floor = out["fc_floor"].notna() & (out["fc_floor"] > 0)
+        out.loc[has_fc_floor, "floor"] = (
+            out.loc[has_fc_floor, "fc_floor"] * 0.65 +
+            out.loc[has_fc_floor, "floor"]    * 0.35
+        ).round(2)
+
     # Value metric
     out["value"] = (out["proj_pts_dk"] / (out["salary"] / 1000)).round(3)
 
@@ -2065,33 +2164,42 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
         return gt.get("total", 225.0)
     out["game_total"] = out["matchup"].apply(get_game_total)
 
-    # Ownership estimate — slate-reactive formula calibrated from 3-slate backtest.
-    # Base: sal_rank^2 * 20 + proj_rank * 10 + 2  (recalibrated from +10.8% bias fix)
-    # Adjustments applied on top of base:
-    #   1. Slate concentration  — fewer games means ownership clusters on fewer players
-    #   2. Game total attraction — high-O/U games pull more public attention
-    #   3. Injury status haircut — GTD/Q players draw less ownership (public fades uncertainty)
+    # Ownership estimate — uses FC (Fantasy Cruncher) projected ownership when available,
+    # falls back to salary+projection rank formula.
+    # FC ownership is far more accurate: it reflects actual public behavior (DK avg pts,
+    # name recognition, chalk patterns) rather than just salary percentile rank.
     sal_rank  = out["salary"].rank(pct=True)
     proj_rank = out["proj_pts_dk"].rank(pct=True)
-    base_own  = sal_rank ** 2 * 20 + proj_rank * 10 + 2
+    formula_own = sal_rank ** 2 * 20 + proj_rank * 10 + 2
 
-    # 1. Slate concentration: small slates concentrate ownership on studs
+    # Slate concentration adjustment (applied to formula fallback only)
     n_games = int(out["matchup"].nunique())
     if n_games <= 4:
-        slate_mult = 1.12   # ownership clusters harder with fewer options
+        slate_mult = 1.12
     elif n_games >= 9:
-        slate_mult = 0.90   # large slate dilutes chalk ownership
+        slate_mult = 0.90
     else:
         slate_mult = 1.0
-    base_own = base_own * slate_mult
+    formula_own = formula_own * slate_mult
 
-    # 2. Game total attraction: top-quartile O/U games draw more ownership
+    # Game total attraction (formula fallback only)
     gt_q75 = out["game_total"].quantile(0.75)
     gt_q25 = out["game_total"].quantile(0.25)
     gt_mult = pd.Series(1.0, index=out.index)
     gt_mult[out["game_total"] >= gt_q75] = 1.08
     gt_mult[out["game_total"] <  gt_q25] = 0.93
-    base_own = base_own * gt_mult
+    formula_own = formula_own * gt_mult
+
+    # Use FC ownership where available; blend (70% FC / 30% formula) for players with FC data
+    if "fc_own" in out.columns:
+        has_fc = out["fc_own"].notna()
+        out["proj_own"] = formula_own.copy()
+        out.loc[has_fc, "proj_own"] = (
+            out.loc[has_fc, "fc_own"] * 0.70 +
+            formula_own.loc[has_fc]   * 0.30
+        )
+    else:
+        out["proj_own"] = formula_own
 
     # 3. Injury haircut: uncertain players draw less public ownership
     inj_mult = pd.Series(1.0, index=out.index)
@@ -2099,7 +2207,30 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     inj_mult[out["status"] == "QUESTIONABLE"] = 0.60
     inj_mult[out["status"] == "DOUBTFUL"]     = 0.35
 
-    out["proj_own"] = (base_own * inj_mult).clip(1, 40).round(1)
+    out["proj_own"] = (out["proj_own"] * inj_mult).clip(1, 40).round(1)
+
+    # Blend FC projection into proj_pts_dk when available (60% FC / 40% our model).
+    # FC Proj comes from Fantasy Cruncher which uses minutes projections, matchup data,
+    # and pace adjustments — far more accurate than avg_pts alone.
+    if "fc_proj" in out.columns:
+        has_fc = out["fc_proj"].notna() & (out["fc_proj"] > 0)
+        fc_n = has_fc.sum()
+        if fc_n > 0:
+            out.loc[has_fc, "proj_pts_dk"] = (
+                out.loc[has_fc, "fc_proj"]     * 0.60 +
+                out.loc[has_fc, "proj_pts_dk"] * 0.40
+            ).round(2)
+            logging.info("[fc] Blended FC projection for %d players", fc_n)
+
+    # Use FC projected minutes for more accurate DNP risk when available.
+    # Pros use proj_mins as a DNP proxy: < 15 mins projected = genuine DNP risk.
+    if "fc_mins" in out.columns:
+        has_fc_mins = out["fc_mins"].notna()
+        # Reclassify: very low projected minutes = high DNP risk regardless of salary
+        out.loc[has_fc_mins & (out["fc_mins"] < 15), "dnp_risk_fc"] = 0.50
+        out.loc[has_fc_mins & (out["fc_mins"].between(15, 22)), "dnp_risk_fc"] = 0.20
+        out.loc[has_fc_mins & (out["fc_mins"] > 22), "dnp_risk_fc"] = 0.05
+        # Apply FC-based DNP risk override (take max of salary-tier vs FC-mins risk)
 
     # ── DNP Risk Assessment (tournament-critical) ─────────────────────────────
     # Postmortem March 8: Grant Nelson 0pt (30% exp), Mo Bamba 0pt (30% exp),
@@ -2122,6 +2253,15 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     out.loc[out["status"] == "QUESTIONABLE", "dnp_risk"] = out.loc[
         out["status"] == "QUESTIONABLE", "dnp_risk"
     ].clip(lower=0.20)
+    # FC minutes override: if FC projects < 15 mins, treat as high DNP risk regardless of salary tier
+    if "fc_mins" in out.columns:
+        fc_mins_mask = out["fc_mins"].notna()
+        out.loc[fc_mins_mask & (out["fc_mins"] < 15), "dnp_risk"] = out.loc[
+            fc_mins_mask & (out["fc_mins"] < 15), "dnp_risk"
+        ].clip(lower=0.45)
+        out.loc[fc_mins_mask & (out["fc_mins"].between(15, 22)), "dnp_risk"] = out.loc[
+            fc_mins_mask & (out["fc_mins"].between(15, 22)), "dnp_risk"
+        ].clip(lower=0.18)
     # DNP-adjusted expected value: E[score] = P(plays) * projection
     out["dnp_adj_proj"] = (out["proj_pts_dk"] * (1 - out["dnp_risk"])).round(2)
 
@@ -2301,7 +2441,7 @@ def build_lineup(
     correlation_bonus: float = 2.5,
     min_proj_total: float = None,
     base_proj_vals: "np.ndarray | None" = None,
-    max_premium_players: int = 3,    # max players with salary >= $9K (forces salary balance)
+    max_premium_players: int = 2,    # max players with salary >= $9K (postmortem: pros avg 1.57)
 ) -> dict | None:
     """
     ILP lineup optimizer.
@@ -2452,12 +2592,20 @@ def build_lineup(
             prob += pulp.lpSum(x[i] for i in cheap_idx) >= _cheap_min
 
     # Salary-tier balance: cap number of premium-salary ($9K+) players.
-    # Prevents optimizer from packing 4+ studs which leaves only $3K filler slots,
-    # blocking out $4-7K value plays with higher GPP scores (e.g. Rayan Rupert $4K).
+    # Postmortem 3/6-3/12: pros averaged 1.57 players >=8K; we averaged 2.20 — over by 0.63.
+    # Reducing from 3 to 2 forces budget into the $5.5K-$7.5K mid-value tier.
     if max_premium_players is not None and max_premium_players > 0:
         premium_idx = [i for i in idx if sals[i] >= 9000]
         if len(premium_idx) > max_premium_players:
             prob += pulp.lpSum(x[i] for i in premium_idx) <= max_premium_players
+
+    # Mid-value floor: require at least 2 players in the $5,500-$7,500 range.
+    # Postmortem 3/6-3/12: pros averaged 3.0 players in $5K-$7K; we averaged 1.9.
+    # The pros' value plays (Jaylin Williams, Javon Small, Danny Wolf, Cam Spencer)
+    # were all in this tier — not sub-$5K punt plays that scored 0.
+    mid_value_idx = [i for i in idx if 5500 <= sals[i] <= 7500]
+    if len(mid_value_idx) >= 2:
+        prob += pulp.lpSum(x[i] for i in mid_value_idx) >= 2
 
     # Locks
     if locked_ids:
@@ -5391,6 +5539,18 @@ def main():
     # 1. Parse
     raw = parse_salary_file(SALARY_FILE)
     print(f"Loaded {len(raw)} players from {SALARY_FILE.name}")
+
+    # 1b. Load Fantasy Cruncher data (FC Proj, Proj Own%, Proj Mins, Floor, Ceiling)
+    # Auto-discovers most recent draftkings_NBA_*.csv in contest/ folder.
+    _fc_data = load_fc_data()
+    if _fc_data is not None:
+        raw = _merge_fc(raw, _fc_data)
+        fc_matched = raw["fc_proj"].notna().sum()
+        print(f"FC data loaded: {fc_matched}/{len(raw)} players matched "
+              f"(FC Proj, Proj Own%, Proj Mins)")
+    else:
+        print("[warn] No Fantasy Cruncher CSV found in contest/ -- using model-only projections")
+        print("       Upload draftkings_NBA_YYYY-MM-DD_players.csv to contest/ for better accuracy")
 
     # 2. Fetch live injury data (ESPN scraper -- free, no API key needed)
     injury_status_map: dict = {}
