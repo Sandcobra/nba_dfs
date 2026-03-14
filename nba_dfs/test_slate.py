@@ -3377,6 +3377,7 @@ def generate_gpp_lineups(
     # not the game with the biggest star. High-salary anchors (Luka, LeBron) appear in
     # games the pros deliberately avoid for stacking. Filtering under $7K removes those
     # salary-prohibitive games and surfaces the real value-dense opportunities.
+    _stack_order_from_fc = False   # flag: True when FC data determined the ordering
     if "matchup" in players.columns and "proj_pts_dk" in players.columns:
         if "fc_proj" in players.columns and players["fc_proj"].notna().sum() > 10:
             # Sum FC Proj for players priced under $7,000 per matchup
@@ -3397,6 +3398,7 @@ def generate_gpp_lineups(
                     .sort_values(ascending=False)
                 )
             stack_games = list(_matchup_scores.index)
+            _stack_order_from_fc = True
             print(f"  Stack order (FC Proj sum <$7K players per game):")
             for _m, _sc in _matchup_scores.items():
                 print(f"    {_m:<22s} <$7K FC sum: {_sc:.1f} pts")
@@ -3422,21 +3424,27 @@ def generate_gpp_lineups(
         _cm_players = players.rename(columns={"proj_pts_dk": "projected_pts_dk"})
         _cm_stacks  = _cm.get_teammate_stacks(_cm_players, min_stack=2, max_stack=4)
         if _cm_stacks:
-            # Derive matchup-ordered list from top stacks (deduplicated, preserving score order)
-            _seen_matchups: list = []
-            for _s in _cm_stacks:
-                # Find the matchup this team belongs to
-                _team = _s["team"]
-                _matchup = next(
-                    (m for m in stack_games if _team in m), None
-                )
-                if _matchup and _matchup not in _seen_matchups:
-                    _seen_matchups.append(_matchup)
-            # Append any remaining matchups not covered by top stacks
-            for _m in stack_games:
-                if _m not in _seen_matchups:
-                    _seen_matchups.append(_m)
-            stack_games = _seen_matchups
+            # When FC data determined the stack ordering, preserve it.
+            # FC <$7K sum is the best signal for which game has affordable high-value
+            # players — 6/7 days in backtest the top-2 FC games had the winning stack.
+            # Corr model's influence is already applied via _corr_pairs in the ILP;
+            # overriding the FC ordering here caused 90/150 lineups in the 5th-ranked
+            # game (NOP@HOU $237.5 FC sum) while NYK@IND ($409.6) got only 5%.
+            if not _stack_order_from_fc:
+                # No FC data — use corr ordering as the best available signal
+                _seen_matchups: list = []
+                for _s in _cm_stacks:
+                    _team = _s["team"]
+                    _matchup = next(
+                        (m for m in stack_games if _team in m), None
+                    )
+                    if _matchup and _matchup not in _seen_matchups:
+                        _seen_matchups.append(_matchup)
+                for _m in stack_games:
+                    if _m not in _seen_matchups:
+                        _seen_matchups.append(_m)
+                stack_games = _seen_matchups
+            # else: FC ordering preserved — corr influence comes via _corr_pairs
 
             # Enrich correlation_pairs with stack scores:
             # Pairs that appear in top stacks get a correlation bonus proportional
