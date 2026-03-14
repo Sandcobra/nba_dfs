@@ -1744,6 +1744,9 @@ def _load_espn_mismatch_signals(cutoff_date: str = "") -> dict:
     return signals
 
 
+import logging as _logging_fc  # noqa: E402 — used by load_fc_data / _merge_fc
+
+
 def load_fc_data(fc_path: "Path | str | None" = None) -> "pd.DataFrame | None":
     """
     Load a Fantasy Cruncher CSV export (header row 2) and return a clean DataFrame
@@ -1788,7 +1791,7 @@ def load_fc_data(fc_path: "Path | str | None" = None) -> "pd.DataFrame | None":
         out = out[out["fc_proj"].notna() & (out["fc_proj"] > 0)].copy()
         return out
     except Exception as _exc:
-        logging.warning("[fc] Failed to load FC data from %s: %s", fc_path, _exc)
+        _logging_fc.warning("[fc] Failed to load FC data from %s: %s", fc_path, _exc)
         return None
 
 
@@ -1825,7 +1828,7 @@ def _merge_fc(players: pd.DataFrame, fc: "pd.DataFrame | None") -> pd.DataFrame:
                 players.at[pidx, col] = fc_row[col]
 
     matched = players["fc_proj"].notna().sum()
-    logging.info("[fc] Merged FC data: %d / %d players matched", matched, len(players))
+    _logging_fc.info("[fc] Merged FC data: %d / %d players matched", matched, len(players))
     return players
 
 
@@ -2220,7 +2223,7 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
                 out.loc[has_fc, "fc_proj"]     * 0.60 +
                 out.loc[has_fc, "proj_pts_dk"] * 0.40
             ).round(2)
-            logging.info("[fc] Blended FC projection for %d players", fc_n)
+            _logging_fc.info("[fc] Blended FC projection for %d players", fc_n)
 
     # Use FC projected minutes for more accurate DNP risk when available.
     # Pros use proj_mins as a DNP proxy: < 15 mins projected = genuine DNP risk.

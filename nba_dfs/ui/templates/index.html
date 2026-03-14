@@ -443,6 +443,9 @@ tbody td{padding:9px 12px;white-space:nowrap}
     </div>
     <div id="fc-drop-zone"
          onclick="document.getElementById('fc-input').click()"
+         ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
+         ondragleave="this.style.borderColor='var(--border)'"
+         ondrop="event.preventDefault();this.style.borderColor='var(--border)';uploadFCFile({target:{files:event.dataTransfer.files}})"
          style="border:1px dashed var(--border);border-radius:6px;padding:10px 8px;
                 text-align:center;cursor:pointer;font-size:12px;color:var(--text3);
                 background:var(--bg2);transition:border-color .2s"
