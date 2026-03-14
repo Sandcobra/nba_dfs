@@ -2645,12 +2645,13 @@ def build_lineup(
     stack_game: str = None,
     stack_bonus: float = 0.12,
     bringback_bonus: float = 0.06,
+    force_stack: bool = True,        # add hard ILP constraint (>=3 from stack_game); set False in fallbacks
     barbell_params: dict = None,
     correlation_pairs: dict = None,
     correlation_bonus: float = 2.5,
     min_proj_total: float = None,
     base_proj_vals: "np.ndarray | None" = None,
-    max_premium_players: int = 2,    # max players with salary >= $9K (postmortem: pros avg 1.57)
+    max_premium_players: int = 2,    # max players with salary >= $8K (postmortem: pros avg 1.57)
 ) -> dict | None:
     """
     ILP lineup optimizer.
@@ -2788,10 +2789,18 @@ def build_lineup(
     # Hard stack-game constraint: when a specific game is designated as the stack,
     # FORCE ≥3 players from that game. The soft 20% score bonus alone is not enough —
     # the ILP will freely pick a different game if it scores higher overall.
-    # This is why lineups on 3/13D ignored the top game: no hard constraint enforced it.
-    if stack_game and "matchup" in players.columns:
+    # force_stack=False in fallbacks so the soft bonus still guides the solver
+    # without making the problem infeasible when exposure caps thin out the game.
+    if force_stack and stack_game and "matchup" in players.columns:
         _hard_sg_idx = [i for i in idx if players["matchup"].iloc[i] == stack_game]
-        if len(_hard_sg_idx) >= 3:
+        # Only add the hard constraint if >= 3 NON-excluded players exist in the game.
+        # Counting excluded players causes infeasibility when caps thin the game out.
+        _excl_set = set(str(p) for p in (excluded_ids or []))
+        _non_excl_sg = [
+            i for i in _hard_sg_idx
+            if str(players["player_id"].iloc[i]) not in _excl_set
+        ]
+        if len(_non_excl_sg) >= 3:
             prob += pulp.lpSum(x[i] for i in _hard_sg_idx) >= 3
 
     # Salary barbell structure: driven by SlateConstructionAgent parameters.
@@ -3638,35 +3647,45 @@ def generate_gpp_lineups(
         )
 
         if result is None:
+            print(f"  [fallback-1] LU{lu_num+1}: relaxing diversity → min_unique=1, max_premium=3")
             result = build_lineup(
                 players_sample,
                 objective_col="gpp_score",
                 prev_lineups=prev_pids[-3:] if prev_pids else None,
                 min_unique=1,
                 locked_ids=list(locked_ids or []),
-                excluded_ids=curr_excl,          # respect exposure cap in fallback
+                excluded_ids=curr_excl,
                 ownership_penalty=0.02,
                 stack_game=stack_game,
                 stack_bonus=0.20,
                 bringback_bonus=0.10,
+                force_stack=True,
                 barbell_params=_barbell,
+                max_premium_players=3,           # loosen premium cap in first fallback
                 correlation_pairs=_corr_pairs,
                 min_proj_total=_min_proj_floor,
                 base_proj_vals=_base_proj,
             )
 
         if result is None:
-            # Last resort: drop diversity + stack, but still respect exposure cap
+            print(f"  [fallback-2] LU{lu_num+1}: soft-only stack, no hard constraint, no premium cap")
+            # Last resort: drop diversity + hard stack constraint, but keep soft stack
+            # bonus so the solver still prefers the designated game. force_stack=False
+            # avoids infeasibility when exposure caps have thinned out stack game players.
             result = build_lineup(
                 players_sample,
                 objective_col="gpp_score",
                 prev_lineups=None,
                 min_unique=0,
                 locked_ids=locked_ids,
-                excluded_ids=curr_excl,          # respect exposure cap even last resort
+                excluded_ids=curr_excl,
                 ownership_penalty=0.0,
-                stack_game=None,
+                stack_game=stack_game,           # keep soft bonus — don't abandon the game
+                stack_bonus=0.20,
+                bringback_bonus=0.10,
+                force_stack=False,               # no hard constraint — avoid infeasibility
                 barbell_params=None,
+                max_premium_players=None,        # relax premium cap in last resort
                 correlation_pairs=_corr_pairs,
                 min_proj_total=None,
                 base_proj_vals=_base_proj,
