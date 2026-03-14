@@ -4987,9 +4987,26 @@ def score_lineup_leverage(lineup: dict, players: pd.DataFrame) -> dict:
 
 # ── Stack analysis ────────────────────────────────────────────────────────────
 def find_top_stacks(players: pd.DataFrame) -> list:
+    # Filter to only active, likely-playing players before computing stacks.
+    # OUT players from FC (fc_mins=0) or high-DNP-risk players corrupt the
+    # stack rankings by inflating team projections with players who won't play.
+    active = players.copy()
+
+    # 1. FC minutes = 0 → confirmed not playing (primary signal when FC is loaded)
+    if "fc_mins" in active.columns:
+        active = active[~(active["fc_mins"].notna() & (active["fc_mins"] < 1))]
+
+    # 2. proj_mins < 5 → our computed estimate says essentially no minutes
+    if "proj_mins" in active.columns:
+        active = active[~(active["proj_mins"].notna() & (active["proj_mins"] < 5))]
+
+    # 3. High DNP risk → likely out (covers cases before FC is uploaded)
+    if "dnp_risk" in active.columns:
+        active = active[active["dnp_risk"] < 0.60]
+
     stacks = []
-    for team in players["team"].unique():
-        tp = players[players["team"] == team].nlargest(4, "proj_pts_dk")
+    for team in active["team"].unique():
+        tp = active[active["team"] == team].nlargest(4, "proj_pts_dk")
         if len(tp) >= 2:
             stacks.append({
                 "team":    team,
