@@ -3510,14 +3510,47 @@ def generate_gpp_lineups(
     # ── Step 3: Build stack pool for top game ─────────────────────────────────────
     # Take top 6 players from top game — we'll cycle through 4-player combos
     def get_stack_pool(df: pd.DataFrame, game: str, pool_size: int = 6) -> list[str]:
+        """
+        Hybrid selection: top 3 by proj_pts_dk + top 3 by value_score (proj/salary_k).
+        This captures both studs AND cheap injury-replacement value plays that top 1%
+        pros use to create salary flexibility. Pure proj ranking misses Danny Wolf
+        ($4.5K, 68% top-1%) in favor of Gregory Jackson ($6.4K, 2% top-1%).
+        """
         if not game or "matchup" not in df.columns:
             return []
-        game_players = df[df["matchup"] == game]
+        game_players = df[df["matchup"] == game].copy()
         # Filter out high DNP risk
         if "dnp_risk" in game_players.columns:
             game_players = game_players[game_players["dnp_risk"] < 0.50]
-        top = game_players.nlargest(pool_size, "proj_pts_dk")
-        return [str(r["player_id"]) for _, r in top.iterrows()]
+        if game_players.empty:
+            return []
+
+        # Top 3 by raw projection (studs)
+        top_proj = game_players.nlargest(3, "proj_pts_dk")
+
+        # Top 3 by value score (cheap injury-replacement plays)
+        if "salary" in game_players.columns and game_players["salary"].gt(0).any():
+            game_players["_val"] = game_players["proj_pts_dk"] / (game_players["salary"] / 1000)
+            top_val = game_players.nlargest(pool_size, "_val")  # extra candidates to avoid dupes
+        else:
+            top_val = game_players.nlargest(pool_size, "proj_pts_dk")
+
+        # Merge: start with proj picks, fill remaining slots with value picks not already included
+        seen_ids: set[str] = set()
+        pool: list[str] = []
+        for _, r in top_proj.iterrows():
+            pid = str(r["player_id"])
+            if pid not in seen_ids:
+                pool.append(pid)
+                seen_ids.add(pid)
+        for _, r in top_val.iterrows():
+            if len(pool) >= pool_size:
+                break
+            pid = str(r["player_id"])
+            if pid not in seen_ids:
+                pool.append(pid)
+                seen_ids.add(pid)
+        return pool
 
     top_stack_pool = get_stack_pool(players, top_game, pool_size=6)
     second_stack_pool = get_stack_pool(players, second_game, pool_size=5)
