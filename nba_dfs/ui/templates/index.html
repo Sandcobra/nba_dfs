@@ -434,6 +434,30 @@ tbody td{padding:9px 12px;white-space:nowrap}
     <input type="file" id="file-input" accept=".csv" onchange="handleFileSelect(event)"/>
   </div>
 
+  <!-- Fantasy Cruncher upload -->
+  <div class="sb-section">
+    <div class="sb-title" style="display:flex;align-items:center;gap:6px">
+      FC Projections
+      <span id="fc-badge" style="display:none;font-size:10px;background:#00d17a;color:#000;
+            border-radius:10px;padding:1px 7px;font-weight:700">LOADED</span>
+    </div>
+    <div id="fc-drop-zone"
+         onclick="document.getElementById('fc-input').click()"
+         style="border:1px dashed var(--border);border-radius:6px;padding:10px 8px;
+                text-align:center;cursor:pointer;font-size:12px;color:var(--text3);
+                background:var(--bg2);transition:border-color .2s"
+         onmouseover="this.style.borderColor='var(--accent)'"
+         onmouseout="this.style.borderColor='var(--border)'">
+      <span id="fc-drop-label">Drop Fantasy Cruncher CSV</span>
+    </div>
+    <input type="file" id="fc-input" accept=".csv" style="display:none"
+           onchange="uploadFCFile(event)"/>
+    <div style="font-size:10px;color:var(--text3);margin-top:5px;line-height:1.4">
+      Export from Fantasy Cruncher &rarr; DraftKings &rarr; Download CSV.<br>
+      Upload <em>before</em> the DK salary CSV for best accuracy.
+    </div>
+  </div>
+
   <!-- Settings -->
   <div class="sb-section">
     <div class="sb-title">Settings</div>
@@ -1131,6 +1155,26 @@ function handleDrop(e) {
 function handleFileSelect(e) {
   const file = e.target.files[0];
   if (file) uploadFile(file);
+}
+
+// ── FC upload ───────────────────────────────────────────────────────────────
+async function uploadFCFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  $('fc-drop-label').textContent = 'Uploading…';
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await fetch('/api/upload-fc', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'FC upload failed');
+    $('fc-drop-label').textContent = '\u2713 ' + file.name;
+    $('fc-badge').style.display = 'inline';
+    toast('FC data loaded: ' + data.players_loaded + ' players. Now upload your DK salary CSV.', 'success');
+  } catch (err) {
+    $('fc-drop-label').textContent = 'Drop Fantasy Cruncher CSV';
+    toast('FC upload failed: ' + err.message, 'error');
+  }
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────

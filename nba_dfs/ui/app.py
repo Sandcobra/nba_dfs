@@ -24,6 +24,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from nba_dfs.test_slate import (
     parse_salary_file,
     build_projections,
+    load_fc_data,
+    _merge_fc,
     enrich_projections,
     generate_gpp_lineups,
     select_portfolio,
@@ -207,6 +209,7 @@ _state: dict = {
     "field_profile": None,          # FieldBehaviorAgent output for tonight's slate
     "adversarial_profile": None,    # AdversarialOwnershipAgent output for tonight's slate
     "news_intel": None,             # NewsIntelAgent output for tonight's slate
+    "fc_data": None,               # Fantasy Cruncher player CSV (FC Proj, Proj Own%, Proj Mins)
 }
 
 
@@ -230,6 +233,9 @@ async def upload_csv(file: UploadFile = File(...)):
 
     try:
         raw = parse_salary_file(tmp_path)
+        # Merge FC data if previously uploaded via /api/upload-fc
+        if _state["fc_data"] is not None:
+            raw = _merge_fc(raw, _state["fc_data"])
         players = build_projections(raw)
         players = players[players["proj_pts_dk"] > 0].copy()
 
@@ -322,6 +328,40 @@ async def upload_csv(file: UploadFile = File(...)):
             "game_summary": game_summary,
             "positional_scarcity": scarcity,
         }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/upload-fc")
+async def upload_fc_csv(file: UploadFile = File(...)):
+    """
+    Accept a Fantasy Cruncher player CSV (draftkings_NBA_*.csv).
+    Stores it in server state so the next /api/upload call will merge
+    FC Proj, Proj Own%, Proj Mins, Floor, Ceiling into the player pool.
+    """
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="wb") as f:
+        f.write(content)
+        tmp_path = Path(f.name)
+
+    try:
+        fc = load_fc_data(tmp_path)
+        if fc is None or fc.empty:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not parse FC data. Make sure this is a Fantasy Cruncher "
+                       "DraftKings player CSV (draftkings_NBA_*.csv) with Proj Own%, "
+                       "Proj Mins, and FC Proj columns."
+            )
+        _state["fc_data"] = fc
+        return {
+            "status": "ok",
+            "players_loaded": len(fc),
+            "message": f"FC data loaded: {len(fc)} players with FC Proj, Proj Own%, Proj Mins. "
+                       f"Upload your DK salary CSV now to apply it."
+        }
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
