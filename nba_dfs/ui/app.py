@@ -298,6 +298,7 @@ async def upload_csv(file: UploadFile = File(...)):
             "value", "proj_own", "gpp_score", "matchup", "game_total", "eligible_slots",
             "is_b2b", "b2b_penalty", "b2b_boost", "dvp_mult",
             "tail_index", "regime_factor",
+            "field_own_est", "fc_vs_avg_ratio",
         ]
         # Only include columns that exist (guard against future changes)
         cols = [c for c in cols if c in players.columns]

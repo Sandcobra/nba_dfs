@@ -2460,10 +2460,15 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     else:
         _usg_bonus_build = 0.0
 
+    # Use calibrated field ownership (FC proj_own / 3 = realistic actual ownership)
+    # Pro data (7-date, 800+ lineups): FC proj_own is 3x higher than actual field own.
+    # FC 18% → actual ~5%, FC 28% → actual ~9%.
+    _field_own = out["proj_own"] / 3.0
+
     out["gpp_score"] = (
         out["ceiling"]     * 0.50 * play_prob +
         out["proj_pts_dk"] * 0.15 * play_prob +
-        (1 - out["proj_own"] / 100) * 8 +
+        (1 - _field_own / 100) * 8 +
         value_bonus        * play_prob +
         gap_bonus          * play_prob +
         vol_bonus          * play_prob +
@@ -2472,6 +2477,31 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     # DNP penalty for very-high-risk plays (>30%)
     high_risk = out["dnp_risk"] >= 0.30
     out.loc[high_risk, "gpp_score"] = (out.loc[high_risk, "gpp_score"] * 0.85).round(3)
+
+    # ── Field ownership calibration ──────────────────────────────────────────
+    # Pro data (7-date, 800+ lineups): FC proj_own is 3x higher than actual.
+    # FC 18% → actual ~5%, FC 28% → actual ~9%.
+    # field_own_est is the realistic estimate of what % of the field will have
+    # this player, used for leverage scoring and ownership penalty.
+    out["field_own_est"] = (out["proj_own"] / 3.0).clip(upper=35.0)
+
+    # ── FC vs season average ratio ───────────────────────────────────────────
+    # Key pro signal: when FC projects a player 15%+ above their season avg,
+    # it signals a good matchup/usage boost → gpp_score boost.
+    # When 15%+ below, it signals bad matchup/health concern → gpp_score cut.
+    _avg_valid = (
+        out["avg_pts"].notna() & (out["avg_pts"] > 5.0)
+        & out["fc_proj"].notna() & (out["fc_proj"] > 0)
+    ) if "fc_proj" in out.columns else pd.Series(False, index=out.index)
+    out["fc_vs_avg_ratio"] = 1.0
+    if _avg_valid.any():
+        out.loc[_avg_valid, "fc_vs_avg_ratio"] = (
+            out.loc[_avg_valid, "fc_proj"] / out.loc[_avg_valid, "avg_pts"]
+        ).clip(0.3, 3.0)
+    # Apply ratio bonus/penalty directly to gpp_score:
+    # +15% above avg → up to +4 gpp pts; -15% below avg → up to -3 gpp pts
+    _ratio_bonus = ((out["fc_vs_avg_ratio"] - 1.0) * 10).clip(-3.0, 4.0)
+    out["gpp_score"] = (out["gpp_score"] + _ratio_bonus).clip(lower=0)
 
     # ── ESPN Price-Mismatch Signal (new) ──────────────────────────────────────
     # Load real ESPN game log data to identify players who are:
@@ -4950,13 +4980,25 @@ def score_lineup_leverage(lineup: dict, players: pd.DataFrame) -> dict:
     pids = [str(p) for p in lineup["player_ids"]]
     pool = players.set_index("player_id")
 
-    owns  = [float(pool.loc[p, "proj_own"]) for p in pids if p in pool.index]
+    # Use calibrated field ownership if available (field_own_est = proj_own / 3).
+    # Pro data (7-date, 800+ lineups): FC proj_own is 3x higher than actual field own.
+    owns = []
+    for p in pids:
+        if p not in pool.index:
+            continue
+        row = pool.loc[p]
+        if hasattr(row, 'field_own_est') and row.field_own_est is not None and not (isinstance(row.field_own_est, float) and row.field_own_est != row.field_own_est):
+            owns.append(float(row.field_own_est))
+        elif hasattr(row, 'proj_own'):
+            owns.append(float(row.proj_own) / 3.0)
+        else:
+            owns.append(15.0)
     sals  = [float(pool.loc[p, "salary"])   for p in pids if p in pool.index]
     teams = [str(pool.loc[p, "team"])       for p in pids if p in pool.index]
 
     avg_own    = round(sum(owns) / len(owns), 1) if owns else 0
-    chalk_ct   = sum(1 for o in owns if o >= 30)   # heavy chalk: projected 30%+ owned
-    low_own_ct = sum(1 for o in owns if o <= 12)   # true differentiators: 12% or less
+    chalk_ct   = sum(1 for o in owns if o >= 9)    # calibrated: FC 27% = actual ~9%
+    low_own_ct = sum(1 for o in owns if o <= 4)    # calibrated: FC 12% = actual ~4%
 
     # Leverage score: 100 = perfectly contrarian, 50 = balanced, 0 = all chalk
     # Calibrated for realistic ownership range (5–50%) from the power-curve proj_own model:
