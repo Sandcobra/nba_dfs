@@ -3685,7 +3685,7 @@ def generate_gpp_lineups(
     top_stack_pool    = get_stack_pool(players, top_game,    pool_size=8, slate_regime=_slate_regime)
     second_stack_pool = get_stack_pool(players, second_game, pool_size=6, slate_regime=_slate_regime)
 
-    print(f"\n  Top game stack pool [{top_game}] (8 players → C(8,4)=70 combos):")
+    print(f"\n  Top game stack pool [{top_game}] (8 players -> C(8,4)=70 combos):")
     for pid in top_stack_pool:
         row = players[players["player_id"].astype(str) == pid]
         if not row.empty:
@@ -3711,6 +3711,53 @@ def generate_gpp_lineups(
 
     stack_combos_4 = sorted(stack_combos_4, key=combo_proj, reverse=True)
 
+    # ── Salary feasibility filter ─────────────────────────────────────────────
+    # Filter out combos where the 4 locked players + core plays leave no room
+    # for the remaining roster spots under the salary cap.
+    # Root cause of all-fallback: Durant($8.8K)+Sengun($8.7K)+Thompson($7.8K)+X
+    # combined can exceed $38K, leaving only $12K for 4 more players → infeasible.
+    _sal_lookup = {str(r["player_id"]): float(r["salary"])
+                   for _, r in players.iterrows()}
+    # Feasibility check uses only cheap core plays (same as template A lock logic)
+    # Expensive studs are NOT hard-locked in Template A — they're soft-preferred via score.
+    # We compute _cheap_core here for the feasibility filter; _cheap_core_ids is set below.
+    _cheap_core_tmp = [p for p in core_play_ids if _sal_lookup.get(p, 0) < 7500]
+    _core_sal       = sum(_sal_lookup.get(pid, 0) for pid in _cheap_core_tmp)
+    _core_n         = len(_cheap_core_tmp)
+
+    _feasible_combos = []
+    for _combo in stack_combos_4:
+        _extra_pids = [p for p in _combo if p not in set(_cheap_core_tmp)]
+        _combo_extra_sal = sum(_sal_lookup.get(p, 0) for p in _extra_pids)
+        _total_locked_sal = _core_sal + _combo_extra_sal
+        _n_locked = _core_n + len(_extra_pids)
+        _remaining = ROSTER_SIZE - _n_locked
+        if _remaining < 0:
+            continue  # more locks than roster spots
+        # Compute min salary for remaining spots using cheapest available players
+        _locked_set = set(_cheap_core_tmp) | set(_combo)
+        _avail_sals = sorted(v for k, v in _sal_lookup.items() if k not in _locked_set)
+        _min_rem = sum(_avail_sals[:_remaining]) if _remaining <= len(_avail_sals) else float("inf")
+        # Also enforce MIN_SALARY_USED — the remaining players must collectively
+        # allow the lineup to clear the $49,500 floor (leave slack: not all remaining
+        # spots are at minimum, so check max possible remaining ≤ cap and
+        # min total locked + max remaining 4 ≥ MIN_SALARY_USED)
+        _max_rem = sum(sorted(_avail_sals, reverse=True)[:_remaining]) if _remaining <= len(_avail_sals) else 0
+        if _total_locked_sal + _min_rem <= SALARY_CAP and _total_locked_sal + _max_rem >= MIN_SALARY_USED:
+            _feasible_combos.append(_combo)
+
+    if _feasible_combos:
+        _n_all = len(stack_combos_4)
+        stack_combos_4 = _feasible_combos
+        print(f"  Salary-feasible 4-man combos: {len(stack_combos_4)}/{_n_all}")
+    else:
+        print(f"  WARNING: No salary-feasible 4-man combos with core plays. "
+              f"Using top 15 by proj (no core-play salary check).")
+        # Fallback: just check combo alone vs cap
+        _solo_feasible = [c for c in stack_combos_4
+                          if sum(_sal_lookup.get(p, 0) for p in c) <= SALARY_CAP - 4 * min(_sal_lookup.values())]
+        stack_combos_4 = _solo_feasible[:15] if _solo_feasible else stack_combos_4[:10]
+
     stack_combos_3 = list(itertools.combinations(second_stack_pool, 3))
     stack_combos_3 = sorted(stack_combos_3, key=combo_proj, reverse=True)
 
@@ -3723,14 +3770,30 @@ def generate_gpp_lineups(
     n_template_b = round(n * 0.15)
     n_template_c = n - n_template_a - n_template_b
 
+    # Separate core plays into cheap locks (hard-locked every time) vs expensive
+    # studs (soft preference via score bonus). Locking an $11K stud + a 4-man
+    # premium game stack often blows through the $50K cap and causes infeasibility.
+    # Threshold: players >= $7.5K are studs — let the ILP pick them freely.
+    _cheap_core_ids = [p for p in core_play_ids
+                       if _sal_lookup.get(p, 0) < 7500]
+    _stud_core_ids  = [p for p in core_play_ids
+                       if _sal_lookup.get(p, 0) >= 7500]
+    if _stud_core_ids:
+        stud_names = [players[players["player_id"].astype(str) == p].iloc[0]["name"]
+                      for p in _stud_core_ids
+                      if not players[players["player_id"].astype(str) == p].empty]
+        print(f"  Expensive studs (soft-locked via score bonus, not hard): {', '.join(stud_names)}")
+
     templates = []
     for i in range(n_template_a):
         combo = stack_combos_4[i % len(stack_combos_4)] if stack_combos_4 else ()
-        locks = list(set(core_play_ids) | set(combo))
+        # Template A locks: cheap core plays + 4-man stack combo (stud is soft via score)
+        locks = list(set(_cheap_core_ids) | set(combo))
         templates.append({"type": "A", "locks": locks, "game": top_game, "force": True})
     for i in range(n_template_b):
         combo = stack_combos_3[i % max(1, len(stack_combos_3))] if stack_combos_3 else ()
-        locks = list(set(core_play_ids[:1]) | set(combo))
+        # Template B: one cheap core play + 3-man second game stack
+        locks = list(set(_cheap_core_ids[:1]) | set(combo))
         templates.append({"type": "B", "locks": locks, "game": second_game, "force": True})
     for i in range(n_template_c):
         templates.append({"type": "C", "locks": list(locked_ids or []), "game": top_game, "force": False})
@@ -3757,8 +3820,26 @@ def generate_gpp_lineups(
         # Remove excluded from locks
         t_locks = [p for p in t_locks if str(p) not in [str(e) for e in t_excl]]
 
+        # ── Score-based exposure penalty ──────────────────────────────────────
+        # Reduce gpp_score for players who exceed their exposure cap so the ILP
+        # is actively pushed away from over-used players — works even through fallbacks.
+        _players_lp = players.copy()
+        if prev_pids:
+            from collections import Counter as _ExpCounter
+            _exp_count = _ExpCounter(p for lu_pids in prev_pids for p in lu_pids)
+            _n_done = len(prev_pids)
+            for _i, _row in _players_lp.iterrows():
+                _pid = str(_row["player_id"])
+                _cnt = _exp_count.get(_pid, 0)
+                _rate = _cnt / _n_done
+                if _rate > 0.33:  # over 33% exposure cap
+                    _excess = _rate - 0.33
+                    # Penalty grows with over-exposure: 50% excess → 25% score cut; 100% excess → 50% cut
+                    _penalty = min(0.85, _excess * 2.5)
+                    _players_lp.at[_i, "gpp_score"] = max(0.1, _row["gpp_score"] * (1 - _penalty))
+
         result = build_lineup(
-            players,
+            _players_lp,
             objective_col="gpp_score",
             prev_lineups=prev_pids,
             min_unique=2 if lu_num > 0 else 0,
@@ -3779,7 +3860,7 @@ def generate_gpp_lineups(
         if result is None:
             print(f"  [fallback-1] LU{lu_num+1}: relax min_unique=1")
             result = build_lineup(
-                players,
+                _players_lp,
                 objective_col="gpp_score",
                 prev_lineups=prev_pids[-3:] if prev_pids else None,
                 min_unique=1,
@@ -3796,17 +3877,17 @@ def generate_gpp_lineups(
                 base_proj_vals=_base_proj,
             )
 
-        # Fallback 2: drop locks, keep stack soft
+        # Fallback 2: drop combo locks, keep global locks + diversity via score penalties
         if result is None:
-            print(f"  [fallback-2] LU{lu_num+1}: drop locks, soft stack only")
+            print(f"  [fallback-2] LU{lu_num+1}: drop combo locks, diversity via score penalty")
             result = build_lineup(
-                players,
+                _players_lp,
                 objective_col="gpp_score",
-                prev_lineups=None,
-                min_unique=0,
+                prev_lineups=prev_pids[-5:] if prev_pids else None,
+                min_unique=1,
                 locked_ids=list(locked_ids or []),
                 excluded_ids=t_excl,
-                ownership_penalty=0.0,
+                ownership_penalty=0.01,
                 stack_game=t_game,
                 stack_bonus=0.20,
                 bringback_bonus=0.10,
