@@ -326,13 +326,15 @@ class NewsIntelAgent:
         Returns
         -------
         {
-          "signals"    : list of raw signal dicts,
-          "impacts"    : {player_id_str: impact_dict},
-          "summary"    : {headline, signal_counts, high_priority},
-          "player_news": {player_id_str: [news_item_dicts]},
+          "signals"      : list of raw signal dicts,
+          "impacts"      : {player_id_str: impact_dict},
+          "summary"      : {headline, signal_counts, high_priority},
+          "player_news"  : {player_id_str: [news_item_dicts]},
+          "x_stats"      : beat writer fetch stats,
+          "source_report": per-source counts/errors/samples for debug output,
         }
         """
-        raw_news = self._fetch_all()
+        raw_news, source_report = self._fetch_all()
         signals  = self._extract_signals(raw_news, players)
         impacts  = self._build_impacts(signals, players)
 
@@ -348,11 +350,12 @@ class NewsIntelAgent:
             len(raw_news), len(signals), len(impacts),
         )
         return {
-            "signals":     signals,
-            "impacts":     impacts,
-            "summary":     summary,
-            "player_news": self._index_by_player(signals),
-            "x_stats":     dict(self._x_stats),   # beat writer fetch stats for UI confirmation
+            "signals":       signals,
+            "impacts":       impacts,
+            "summary":       summary,
+            "player_news":   self._index_by_player(signals),
+            "x_stats":       dict(self._x_stats),
+            "source_report": source_report,
         }
 
     def apply_to_players(
@@ -404,60 +407,74 @@ class NewsIntelAgent:
 
     # ── Fetchers ───────────────────────────────────────────────────────────────
 
-    def _fetch_all(self) -> list[dict]:
+    def _fetch_all(self) -> tuple[list[dict], dict]:
         """
-        Fetch from all sources and return combined list of news items.
+        Fetch from all sources. Returns (items, source_report).
 
-        Priority order for real-time lineup/injury news:
-          1. NBC Sports player-news feed (primary) — plain-English blurbs,
-             aggregates all wire services, no auth required.
-          2. X beat writers (fallback) — only used when NBC Sports returns
-             zero items (scrape failure, site change, etc.)
-          3. ESPN / Rotowire / FantasyPros / RotoGrinders — supplementary;
-             run regardless of primary success for additional coverage.
+        source_report keys: nbcsports, x_fallback, rotowire, espn,
+                            fantasypros, rotogrinders.
+        Each value: {"count": int, "error": str|None, "samples": [str]}
+
+        Priority:
+          1. NBC Sports (primary)
+          2. X beat writers (fallback — only when NBC returns 0 items)
+          3. ESPN / Rotowire / FantasyPros / RotoGrinders (supplementary)
         """
         items: list[dict] = []
+        report: dict = {}
 
-        # ── 1. Primary: NBC Sports player-news ────────────────────────────
+        # ── 1. Primary: NBC Sports ────────────────────────────────────────
         nbc_items: list[dict] = []
         try:
             nbc_items = self._fetch_nbcsports_news()
             items.extend(nbc_items)
+            report["nbcsports"] = {
+                "count":   len(nbc_items),
+                "error":   None,
+                "samples": [f"{i['name']}: {i['text'][:120]}" for i in nbc_items[:5]],
+            }
             logger.info("[news] NBC Sports: %d items", len(nbc_items))
         except Exception as exc:
+            report["nbcsports"] = {"count": 0, "error": str(exc), "samples": []}
             logger.warning("[news] NBC Sports fetch failed: %s", exc)
 
-        # ── 2. Fallback: X beat writers (only if NBC returned nothing) ────
+        # ── 2. Fallback: X beat writers ───────────────────────────────────
         if not nbc_items:
-            logger.info("[news] NBC Sports returned 0 items — falling back to X beat writers")
+            logger.info("[news] NBC Sports 0 items — falling back to X beat writers")
             try:
                 x_items = self._fetch_x_beat_writers()
                 items.extend(x_items)
-                if x_items:
-                    logger.info("[news] X beat writers (fallback): %d items", len(x_items))
+                report["x_fallback"] = {
+                    "count":   len(x_items),
+                    "error":   self._x_stats.get("error"),
+                    "samples": [f"{i['name']}: {i['text'][:120]}" for i in x_items[:3]],
+                }
             except Exception as exc:
-                logger.warning("[news] X beat writer fallback failed: %s", exc)
+                report["x_fallback"] = {"count": 0, "error": str(exc), "samples": []}
+                logger.warning("[news] X fallback failed: %s", exc)
         else:
-            # NBC succeeded — reset X stats to reflect it was skipped
             self._x_stats["enabled"] = False
             self._x_stats["error"] = "skipped — NBC Sports feed active"
+            report["x_fallback"] = {"count": 0, "error": "skipped — NBC active", "samples": []}
 
         # ── 3. Supplementary sources ──────────────────────────────────────
-        for fn in (
-            self._fetch_rotowire_news,
-            self._fetch_espn_news,
-            self._fetch_fantasypros_news,
-            self._fetch_rotogrinders_news,
+        for src_name, fn in (
+            ("rotowire",     self._fetch_rotowire_news),
+            ("espn",         self._fetch_espn_news),
+            ("fantasypros",  self._fetch_fantasypros_news),
+            ("rotogrinders", self._fetch_rotogrinders_news),
         ):
             try:
                 batch = fn()
                 items.extend(batch)
+                report[src_name] = {"count": len(batch), "error": None, "samples": []}
                 time.sleep(SCRAPE_DELAY)
             except Exception as exc:
+                report[src_name] = {"count": 0, "error": str(exc), "samples": []}
                 logger.warning("[news] %s failed: %s", fn.__name__, exc)
 
         logger.debug("[news] Fetched %d total news items", len(items))
-        return items
+        return items, report
 
     def _fetch_x_beat_writers(self) -> list[dict]:
         """

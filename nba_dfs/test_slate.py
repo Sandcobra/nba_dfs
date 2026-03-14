@@ -5789,8 +5789,9 @@ def main():
             print(f"Removed {removed} players with salary-tier DNP risk >= 35%")
     print(f"After filtering: {len(players)} eligible players")
 
-    # 3b. X beat writer news intel -- applies projection multipliers from live tweets
-    # (STARTING_REPLACEMENT x1.28, SCRATCHED x0.00, MINUTES_BOOST x1.10, etc.)
+    # 3b. News intel — NBC Sports (primary) with X beat writers as fallback.
+    # Extracts STARTING_REPLACEMENT / SCRATCHED / USAGE_INCREASE signals and
+    # applies projection multipliers before lineup generation.
     try:
         from agents.news_intel_agent import NewsIntelAgent
         _nia = NewsIntelAgent()
@@ -5798,30 +5799,82 @@ def main():
         players, _excluded_pids = _nia.apply_to_players(players, _intel["impacts"])
         if _excluded_pids:
             players = players[~players["player_id"].astype(str).isin(_excluded_pids)].copy()
-            print(f"  News intel excluded {len(_excluded_pids)} players (SCRATCHED/DNP signals)")
         _nia.close()
-        _xst = _intel.get("x_stats", {})
-        total_signals = len(_intel.get("signals", []))
-        print("\n--- NEWS INTEL ---")
-        if _xst.get("enabled"):
-            print(f"  X (Twitter): OK -- {_xst['handles_queried']} writers queried, "
-                  f"{_xst['tweets_retrieved']} tweets, {_xst['signals_from_x']} signals")
+
+        _sr   = _intel.get("source_report", {})
+        _xst  = _intel.get("x_stats", {})
+        _sigs = _intel.get("signals", [])
+
+        print("\n═══ NEWS INTEL DEBUG ═══════════════════════════════════════")
+
+        # ── Per-source fetch results ──────────────────────────────────────
+        print("  SOURCE FETCH RESULTS:")
+        _nbc = _sr.get("nbcsports", {})
+        _nbc_count = _nbc.get("count", 0)
+        _nbc_err   = _nbc.get("error")
+        if _nbc_err:
+            print(f"  NBC Sports   : FAILED — {_nbc_err}")
+            print(f"                 (page may be JS-rendered; X fallback was used)")
         else:
-            _xerr = _xst.get("error") or "X_BEARER_TOKEN not set or API disabled"
-            print(f"  X (Twitter): DISABLED -- {_xerr}")
-        print(f"  Total signals: {total_signals} across all sources")
-        if _intel.get("player_news"):
+            print(f"  NBC Sports   : {_nbc_count} items scraped")
+
+        _xfb = _sr.get("x_fallback", {})
+        if _xfb.get("error") == "skipped — NBC active":
+            print(f"  X (fallback) : skipped — NBC Sports feed active")
+        elif _xst.get("enabled"):
+            print(f"  X (fallback) : {_xfb.get('count', 0)} items  "
+                  f"({_xst.get('tweets_retrieved', 0)} tweets, "
+                  f"{_xst.get('signals_from_x', 0)} signals)")
+        else:
+            print(f"  X (fallback) : DISABLED — {_xst.get('error', 'no token')}")
+
+        for _sname in ("espn", "rotowire", "fantasypros", "rotogrinders"):
+            _si = _sr.get(_sname, {})
+            _cnt, _err = _si.get("count", 0), _si.get("error")
+            _status = f"{_cnt} items" if not _err else f"FAILED — {_err[:60]}"
+            print(f"  {_sname:<13s}: {_status}")
+
+        # ── Raw NBC Sports samples (key diagnostic) ───────────────────────
+        _samples = _nbc.get("samples", [])
+        if _samples:
+            print(f"\n  NBC SPORTS RAW SAMPLES (first {len(_samples)}):")
+            for _s in _samples:
+                print(f"    • {_s[:110]}")
+        elif _nbc_count == 0 and not _nbc_err:
+            print("\n  NBC SPORTS: 0 items — page likely JS-rendered (BeautifulSoup")
+            print("              cannot execute JavaScript). Options:")
+            print("              1. Check if page structure changed (inspect HTML)")
+            print("              2. Use a headless browser (playwright/selenium)")
+
+        # ── Signals that fired ────────────────────────────────────────────
+        print(f"\n  SIGNALS ({len(_sigs)} total, {len(_excluded_pids)} players excluded):")
+        if _sigs:
             _pid_to_name = players.set_index("player_id")["name"].to_dict() if "player_id" in players.columns else {}
-            for _pid, news_list in list(_intel["player_news"].items())[:8]:
-                _pname = _pid_to_name.get(_pid, _pid_to_name.get(int(_pid) if str(_pid).isdigit() else _pid, str(_pid)))
-                _sig = news_list[0]["signal"]
-                _src = news_list[0].get("source", "?")
-                _txt = news_list[0].get("text", "")[:70]
-                print(f"  {_pname:<26s} {_sig:<24s} [{_src}] {_txt}")
-        print("------------------\n")
+            for _s in _sigs:
+                _pid  = str(_s.get("player_id", ""))
+                _pname = _pid_to_name.get(_pid, _pid_to_name.get(
+                    int(_pid) if _pid.isdigit() else _pid, _pid))
+                _sig  = _s.get("signal", "?")
+                _src  = _s.get("source", "?")
+                _conf = _s.get("confidence", 0)
+                _txt  = _s.get("text", "")[:80]
+                print(f"    {str(_pname):<26s} {_sig:<24s} [{_src}] conf={_conf:.2f}")
+                print(f"      \"{_txt}\"")
+        else:
+            print("    (none — no player-matched signals found)")
+            print("    This means either:")
+            print("    a) NBC scraped 0 items (JS rendering issue)")
+            print("    b) Items scraped but no player names matched the pool")
+            print("    c) Items scraped but no regex patterns matched the text")
+
+        print("═══════════════════════════════════════════════════════════\n")
+
     except Exception as _e:
-        print(f"[warn] News intel agent failed: {_e} -- proceeding without X signals")
+        import traceback
+        print(f"\n[warn] News intel agent failed: {_e}")
+        print(traceback.format_exc())
         _intel = {}
+        _excluded_pids = []
 
     # 3c. Block pure bench players (salary < $5,000) with no confirmed role signal.
     # Rationale: sub-$5K players only produce value when a starter is injured and they
