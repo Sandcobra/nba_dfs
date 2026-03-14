@@ -1891,6 +1891,10 @@ def load_fc_data(fc_path: "Path | str | None" = None) -> "pd.DataFrame | None":
         ).round(1)
         # FPPM-based projection: proj_mins * FPPM = direct DK point estimate
         out["fc_fppm_proj"] = (out["fc_mins"] * out["fc_fppm"]).round(2)
+        # DVP (Def v Pos): raw matchup advantage score from FC export
+        # Positive = favorable matchup, negative = tough matchup
+        _dvp_raw = df.get("Def v Pos", df.get("DVP", pd.Series(dtype=float)))
+        out["fc_dvp"] = pd.to_numeric(_dvp_raw, errors="coerce")
         # Drop rows with no usable projection
         out = out[out["fc_proj"].notna() & (out["fc_proj"] > 0)].copy()
         return out
@@ -1903,11 +1907,12 @@ def _merge_fc(players: pd.DataFrame, fc: "pd.DataFrame | None") -> pd.DataFrame:
     """
     Merge Fantasy Cruncher data into player pool by fuzzy name match.
     Adds columns: fc_proj, fc_own, fc_mins, fc_floor, fc_ceiling,
-                  fc_fppm, fc_usg, fc_stdv36, fc_avg36, fc_team_pts, fc_fppm_proj.
+                  fc_fppm, fc_usg, fc_stdv36, fc_avg36, fc_team_pts, fc_fppm_proj, fc_dvp.
     Players with no FC match get NaN in those columns.
     """
     _ALL_FC_COLS = ("fc_proj", "fc_own", "fc_mins", "fc_floor", "fc_ceiling",
-                    "fc_fppm", "fc_usg", "fc_stdv36", "fc_avg36", "fc_team_pts", "fc_fppm_proj")
+                    "fc_fppm", "fc_usg", "fc_stdv36", "fc_avg36", "fc_team_pts", "fc_fppm_proj",
+                    "fc_dvp")
     if fc is None or fc.empty:
         for col in _ALL_FC_COLS:
             players[col] = float("nan")
@@ -3325,42 +3330,81 @@ def generate_gpp_lineups(
     _sp = slate_profile or {}
     n_lineups = n
 
-    # ── Step 1: Determine stack game order (keep existing corr model logic) ─────
-    # This section is identical to the previous version — corr model determines
-    # which game gets the 80% allocation.
-    _stack_order_from_fc = False
-    stack_games: list[str] = []
-    if "matchup" in players.columns and "proj_pts_dk" in players.columns:
-        if "fc_proj" in players.columns and players["fc_proj"].notna().sum() > 10:
-            _affordable = players[
-                players["fc_proj"].notna() & (players["salary"] < 7000)
-            ][["matchup", "fc_proj", "salary"]]
-            if len(_affordable) >= 4:
-                _matchup_scores = (
-                    _affordable.groupby("matchup")["fc_proj"].sum()
-                    .sort_values(ascending=False)
-                )
-            else:
-                _matchup_scores = (
-                    players[["matchup", "fc_proj"]].dropna()
-                    .groupby("matchup")["fc_proj"]
-                    .apply(lambda x: x.nlargest(3).sum())
-                    .sort_values(ascending=False)
-                )
-            stack_games = list(_matchup_scores.index)
-            _stack_order_from_fc = True
-        else:
-            _matchup_totals = (
-                players[["matchup", "game_total"]].dropna()
-                .groupby("matchup")["game_total"].first()
-                .sort_values(ascending=False)
-            )
-            stack_games = list(_matchup_totals.index)
-    else:
-        stack_games = players["matchup"].dropna().unique().tolist() if "matchup" in players.columns else []
+    # ── Step 1: Determine stack game order ───────────────────────────────────────
+    # Backtest 3/6-3/13 showed that game_total (O/U) alone is wrong: on 3/13
+    # CLE@DAL had O/U=236.5 vs NOP@HOU O/U=230.5 but NOP@HOU was correct.
+    # The missing signal is DVP (Def v Pos): NOP@HOU had avg DVP +21 to +28
+    # for the key value plays, vs much lower DVP for CLE@DAL.
+    #
+    # Composite stack score = game_total * dvp_mult * injury_value_mult
+    #   dvp_mult: average DVP of top-4 players in game, normalized 1.0-1.3
+    #   injury_value_mult: bonus when an injury replacement play exists in game
+    #     (cheap player with fc_proj >> salary-implied due to starter being OUT)
+    #
+    # Corr model reorders this when available — it's the most accurate signal.
+    # DVP composite is the robust fallback that also handles the corr model case.
 
-    # Corr model reordering (primary signal)
     _corr_pairs: dict = {}
+    stack_games: list[str] = []
+
+    if "matchup" in players.columns:
+        # ── DVP-weighted composite game score ────────────────────────────────
+        _matchup_composite: dict[str, float] = {}
+        for _mg in players["matchup"].dropna().unique():
+            _gp = players[players["matchup"] == _mg]
+            _top4 = _gp.nlargest(4, "proj_pts_dk")
+
+            # Component 1: game total (Vegas O/U)
+            _gt = float(_gp["game_total"].iloc[0]) if "game_total" in _gp.columns and not _gp["game_total"].isna().all() else 225.0
+
+            # Component 2: DVP multiplier — avg of top-4 players' DVP scores
+            # Priority: fc_dvp (raw FC "Def v Pos" values, e.g. +28, -5)
+            #           dvp_mult (computed game-log DVP, normalized around 1.0)
+            if "fc_dvp" in players.columns and _top4["fc_dvp"].notna().any():
+                # fc_dvp is raw: +30 → 1.15x bonus, -15 → 0.925x penalty
+                _avg_dvp_raw = float(_top4["fc_dvp"].fillna(0).mean())
+                _dvp_mult = 1.0 + min(0.20, max(-0.10, _avg_dvp_raw / 200.0))
+            elif "dvp_mult" in players.columns:
+                # dvp_mult is normalized around 1.0 (e.g. 1.06, 0.94)
+                # Convert deviation from 1.0 to a composite bonus
+                _avg_dvm = float(_top4["dvp_mult"].fillna(1.0).mean())
+                _dvp_mult = 1.0 + min(0.10, max(-0.05, (_avg_dvm - 1.0) * 0.5))
+            else:
+                _dvp_mult = 1.0
+
+            # Component 3: injury-value bonus — game gets +5% when a cheap
+            # player (<$4.5K) has fc_proj significantly above their avg_pts
+            # (signal that they're filling in for an OUT starter)
+            _injury_bonus = 1.0
+            if "fc_proj" in players.columns and "avg_pts" in players.columns:
+                _cheap_gp = _gp[_gp["salary"] <= 4500]
+                for _, _cp in _cheap_gp.iterrows():
+                    _fc = float(_cp.get("fc_proj", 0) or 0)
+                    _avg = float(_cp.get("avg_pts", 0) or 0)
+                    if _avg > 5 and _fc > _avg * 1.40:  # 40%+ above average → injury play
+                        _injury_bonus = max(_injury_bonus, 1.08)
+                    elif _avg > 3 and _fc > _avg * 1.25:
+                        _injury_bonus = max(_injury_bonus, 1.04)
+
+            _matchup_composite[_mg] = _gt * _dvp_mult * _injury_bonus
+
+        stack_games = sorted(_matchup_composite, key=lambda g: -_matchup_composite[g])
+
+        print(f"\n  Stack game ranking (DVP-weighted composite):")
+        for _mg in stack_games[:6]:
+            _s = _matchup_composite[_mg]
+            _gp2 = players[players["matchup"] == _mg]
+            _gt_v = float(_gp2["game_total"].iloc[0]) if "game_total" in players.columns and not _gp2["game_total"].isna().all() else 0
+            _top4_2 = _gp2.nlargest(4, "proj_pts_dk")
+            if "fc_dvp" in players.columns and _top4_2["fc_dvp"].notna().any():
+                _dvp_str = f"avg DVP={_top4_2['fc_dvp'].fillna(0).mean():.1f}"
+            elif "dvp_mult" in players.columns:
+                _dvp_str = f"dvp_mult={_top4_2['dvp_mult'].fillna(1.0).mean():.3f}"
+            else:
+                _dvp_str = "DVP=n/a"
+            print(f"    {_mg:<22s} composite={_s:.1f}  (O/U={_gt_v:.0f}  {_dvp_str})")
+
+    # ── Corr model reordering (primary signal — overrides composite when available) ─
     try:
         from nba_dfs.models.correlation_model import CorrelationModel as _CorrModel
         _cm = _CorrModel()
@@ -3384,11 +3428,16 @@ def generate_gpp_lineups(
                     if _corr_pairs.get((_pa, _pb), 0) < _new_corr:
                         _corr_pairs[(_pa, _pb)] = round(_new_corr, 3)
                         _corr_pairs[(_pb, _pa)] = round(_new_corr, 3)
-            print(f"  Stack order (corr-weighted): {' | '.join(stack_games)}")
+            print(f"  Stack order (corr-weighted): {' | '.join(stack_games[:4])}")
             print(f"  Top stack: {_cm_stacks[0]['team']} score={_cm_stacks[0]['stack_score']:.1f}")
+        else:
+            print(f"  Stack order (DVP composite — corr model returned no stacks): {' | '.join(stack_games[:4])}")
     except Exception as _ce:
-        import logging as _cl
-        _cl.warning("[corr] CorrelationModel stack ordering skipped: %s", _ce)
+        print(f"  [WARN] Corr model failed ({_ce}) — using DVP composite ordering")
+        print(f"  Stack order (DVP composite fallback): {' | '.join(stack_games[:4])}")
+
+    if not stack_games:
+        stack_games = players["matchup"].dropna().unique().tolist() if "matchup" in players.columns else []
 
     top_game = stack_games[0] if stack_games else None
     second_game = stack_games[1] if len(stack_games) > 1 else top_game
