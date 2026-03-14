@@ -1158,9 +1158,11 @@ function renderOverview(data) {
 
   // Debut alert
   const debutPlayers = players.filter(p => p.status === 'DEBUT');
-  if (debutPlayers.length) {
-    $('debut-alert').style.display = 'block';
-    $('debut-alert-body').innerHTML = debutPlayers.map(p =>
+  const debutEl = $('debut-alert');
+  if (debutPlayers.length && debutEl) {
+    debutEl.style.display = 'block';
+    const debutBody = $('debut-alert-body');
+    if (debutBody) debutBody.innerHTML = debutPlayers.map(p =>
       `<strong>${p.name}</strong> (${p.team} · ${p.primary_position} · ${fmtSal(p.salary)}) — ` +
       `salary-implied proj: <span style="color:#00e688;font-weight:700">${fmt(p.proj_pts_dk)} pts</span>`
     ).join('<br>');
@@ -1242,9 +1244,11 @@ function sortTable(col) {
 }
 
 function renderPlayerTable(players) {
-  const search  = ($('player-search').value||'').toLowerCase();
+  const searchEl = $('player-search');
+  const search  = searchEl ? (searchEl.value||'').toLowerCase() : '';
   const posF    = state.posFilter;
-  const teamF   = $('team-filter').value;
+  const teamFilterEl = $('team-filter');
+  const teamF   = teamFilterEl ? teamFilterEl.value : '';
   const col     = state.sortCol;
   const dir     = state.sortDir === 'asc' ? 1 : -1;
 
