@@ -3424,27 +3424,25 @@ def generate_gpp_lineups(
         _cm_players = players.rename(columns={"proj_pts_dk": "projected_pts_dk"})
         _cm_stacks  = _cm.get_teammate_stacks(_cm_players, min_stack=2, max_stack=4)
         if _cm_stacks:
-            # When FC data determined the stack ordering, preserve it.
-            # FC <$7K sum is the best signal for which game has affordable high-value
-            # players — 6/7 days in backtest the top-2 FC games had the winning stack.
-            # Corr model's influence is already applied via _corr_pairs in the ILP;
-            # overriding the FC ordering here caused 90/150 lineups in the 5th-ranked
-            # game (NOP@HOU $237.5 FC sum) while NYK@IND ($409.6) got only 5%.
-            if not _stack_order_from_fc:
-                # No FC data — use corr ordering as the best available signal
-                _seen_matchups: list = []
-                for _s in _cm_stacks:
-                    _team = _s["team"]
-                    _matchup = next(
-                        (m for m in stack_games if _team in m), None
-                    )
-                    if _matchup and _matchup not in _seen_matchups:
-                        _seen_matchups.append(_matchup)
-                for _m in stack_games:
-                    if _m not in _seen_matchups:
-                        _seen_matchups.append(_m)
-                stack_games = _seen_matchups
-            # else: FC ordering preserved — corr influence comes via _corr_pairs
+            # Corr model ordering is the primary signal: it identifies which game has
+            # the best correlated trio (highest combined score + correlation).
+            # The FC <$7K filter was wrong for slates where the top stack is expensive
+            # (e.g. KD $10K + Amen $7.3K + Sengun $8K in NOP@HOU all get filtered out,
+            # causing NOP@HOU to rank last despite being the correct game).
+            # FC data is still used as a tiebreaker/fallback (via _stack_order_from_fc),
+            # but the corr model ordering always wins when corr data is available.
+            _seen_matchups: list = []
+            for _s in _cm_stacks:
+                _team = _s["team"]
+                _matchup = next(
+                    (m for m in stack_games if _team in m), None
+                )
+                if _matchup and _matchup not in _seen_matchups:
+                    _seen_matchups.append(_matchup)
+            for _m in stack_games:
+                if _m not in _seen_matchups:
+                    _seen_matchups.append(_m)
+            stack_games = _seen_matchups
 
             # Enrich correlation_pairs with stack scores:
             # Pairs that appear in top stacks get a correlation bonus proportional
@@ -3536,16 +3534,16 @@ def generate_gpp_lineups(
 
     # ── Weighted stack sequence ────────────────────────────────────────────
     # Pro data (800+ lineups, 7 dates): 80-95% of top lineups stack from
-    # top 1-2 projected games. Round-robin across all games gave 15/21 wrong
-    # game on 3/13D. New distribution: Game#1=60%, Game#2=25%, rest share 15%.
+    # top 1-2 projected games. Corr model identifies Game#1.
+    # Distribution: Game#1=80%, Game#2=15%, rest share 5%.
     _stack_weights: list[float] = []
     for _gi in range(n_games):
         if _gi == 0:
-            _stack_weights.append(0.60)
+            _stack_weights.append(0.80)
         elif _gi == 1:
-            _stack_weights.append(0.25)
+            _stack_weights.append(0.15)
         else:
-            _stack_weights.append(0.15 / max(1, n_games - 2))
+            _stack_weights.append(0.05 / max(1, n_games - 2))
     _stack_sequence: list[str] = []
     _running_cnt = 0
     for _gi, (_game, _sw) in enumerate(zip(stack_games, _stack_weights)):
