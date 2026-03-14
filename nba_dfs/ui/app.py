@@ -197,6 +197,7 @@ _state: dict = {
     "job_running": False,
     "job_queue": None,
     "dk_path": None,
+    "salary_csv_path": None,        # persistent path to last uploaded salary CSV for late-swap reload
     "_full_pool_snapshot": None,    # snapshot of full player pool at upload time (for DvP tracking)
     "not_rostered_ids": set(),      # player IDs removed after starters check — not on active roster
     "contest": None,                # parsed contest standings data (real ownership, field lineups)
@@ -230,6 +231,11 @@ async def index():
 async def upload_csv(file: UploadFile = File(...)):
     """Parse a DK/FD salary CSV and return the player pool + analysis."""
     content = await file.read()
+    # Save to a persistent location so late-swap can reload without re-upload
+    salary_save_path = Path(tempfile.gettempdir()) / "nba_dfs_salary_latest.csv"
+    salary_save_path.write_bytes(content)
+    _state["salary_csv_path"] = str(salary_save_path)
+
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="wb") as f:
         f.write(content)
         tmp_path = Path(f.name)
@@ -299,6 +305,7 @@ async def upload_csv(file: UploadFile = File(...)):
             "is_b2b", "b2b_penalty", "b2b_boost", "dvp_mult",
             "tail_index", "regime_factor",
             "field_own_est", "fc_vs_avg_ratio",
+            "proj_mins",
         ]
         # Only include columns that exist (guard against future changes)
         cols = [c for c in cols if c in players.columns]
@@ -1924,11 +1931,23 @@ async def upload_lineups(file: UploadFile = File(...)):
     Requires a salary CSV to already be uploaded (so player data is available for
     projections, salary, and slot eligibility lookups).
     """
+    # Auto-reload players from saved salary CSV if server restarted and state was lost
     if _state["players"] is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Upload a salary CSV first so player data is available for matching.",
-        )
+        saved = _state.get("salary_csv_path")
+        if not saved or not Path(saved).exists():
+            raise HTTPException(
+                status_code=400,
+                detail="No player pool loaded. Upload your DK salary CSV first, then upload previous lineups.",
+            )
+        try:
+            _raw = parse_salary_file(Path(saved))
+            if _state["fc_data"] is not None:
+                _raw = _merge_fc(_raw, _state["fc_data"])
+            _state["players"] = build_projections(_raw)
+            _state["players"] = _state["players"][_state["players"]["proj_pts_dk"] > 0].copy()
+        except Exception as _reload_err:
+            raise HTTPException(status_code=400,
+                detail=f"Could not reload player pool: {_reload_err}. Re-upload the salary CSV.")
 
     content = await file.read()
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="wb") as f:
@@ -2021,8 +2040,23 @@ async def upload_contest(file: UploadFile = File(...)):
       - Late swap replacement scoring uses field-lineup overlap + leader avoidance
       - A field ownership panel is shown in the UI
     """
+    # Auto-reload players from saved salary CSV if server restarted and state was lost
     if _state["players"] is None:
-        raise HTTPException(status_code=400, detail="Upload a salary CSV first.")
+        saved = _state.get("salary_csv_path")
+        if not saved or not Path(saved).exists():
+            raise HTTPException(
+                status_code=400,
+                detail="No player pool loaded. Upload your DK salary CSV first, then upload contest data."
+            )
+        try:
+            _raw = parse_salary_file(Path(saved))
+            if _state["fc_data"] is not None:
+                _raw = _merge_fc(_raw, _state["fc_data"])
+            _state["players"] = build_projections(_raw)
+            _state["players"] = _state["players"][_state["players"]["proj_pts_dk"] > 0].copy()
+        except Exception as _reload_err:
+            raise HTTPException(status_code=400,
+                detail=f"Could not reload player pool: {_reload_err}. Re-upload the salary CSV.")
 
     content = await file.read()
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="wb") as f:
