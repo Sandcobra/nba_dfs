@@ -712,31 +712,128 @@ class NewsIntelAgent:
             })
         return items
 
+    # Months ESPN uses in comment prefixes: "Mar 13:", "Dec 21:", etc.
+    _ESPN_DATE_RE = re.compile(
+        r"^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}):\s*",
+        re.IGNORECASE,
+    )
+    # Stat-line detector: box-score text, NOT injury news.
+    # Pattern: number followed by FG/FT/3P/reb/ast/pts/blk/stl patterns.
+    _STAT_LINE_RE = re.compile(
+        r"\b\d+-\d+\s+(?:FG|FT|3P)\b|\b\d+\s+(?:rebound|point|assist|block|steal)",
+        re.IGNORECASE,
+    )
+    # Current NBA season year (used for stale-date check)
+    _CURRENT_SEASON_YEAR = 2026
+
     def _fetch_espn_news(self) -> list[dict]:
-        # ESPN injury table columns: NAME | POS | EST.RETURN | STATUS | COMMENT
+        """
+        Scrape ESPN NBA injury page.
+
+        Three layers of filtering applied here (not in _extract_signals) so
+        bad data never enters the pipeline at all:
+
+        1. STAT LINE FILTER — ESPN sometimes lists recent game stats alongside
+           injury notes. Entries matching box-score patterns (e.g. "3-5 FG,
+           7 rebounds") are discarded; they carry no DFS signal.
+
+        2. STALE DATE FILTER — ESPN timestamps ALL rows with the current scrape
+           time, so the age filter in _extract_signals cannot detect old entries.
+           We parse the date prefix from the comment text ("Dec 21: ...") and
+           reject entries older than 5 days. Without this, Dec 21 entries like
+           Lively's post-surgery note appear every single night.
+
+        3. TEXT-OVERRIDES-STATUS — When the comment explicitly says "is out" or
+           "ruled out" but ESPN status still says GTD/QUESTIONABLE (because the
+           status field is updated less frequently than the comment), we upgrade
+           status to OUT so the classification chain gives SCRATCHED, not GTD.
+        """
         resp = self._client.get("https://www.espn.com/nba/injuries")
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Compile SCRATCHED-override patterns once (subset of _PATTERNS SCRATCHED list)
+        _SCRATCHED_TEXT = re.compile(
+            r"\b(?:is out|ruled out|will not play|won.t play|has been ruled out|"
+            r"out for (?:tonight|the game|friday|saturday|sunday|monday|tuesday|"
+            r"wednesday|thursday)|will miss tonight|did not travel|will not suit up)\b",
+            re.IGNORECASE,
+        )
+
+        now = datetime.now(tz=timezone.utc)
         items = []
+
         for table in soup.select("div.ResponsiveTable"):
             for row in table.select("tr.Table__TR")[1:]:
                 cols = row.select("td")
                 if len(cols) < 4:
                     continue
+
                 name    = cols[0].get_text(strip=True)
                 status  = cols[3].get_text(strip=True) if len(cols) > 3 else ""
                 comment = cols[4].get_text(strip=True) if len(cols) > 4 else ""
-                # Use comment as primary text; fall back to status so regex has something
-                text = comment if comment else status
+                text    = comment if comment else status
+
                 if not name or not text:
                     continue
+
+                # ── Layer 1: Stat line filter ──────────────────────────────
+                if self._STAT_LINE_RE.search(text):
+                    logger.debug("[espn] Skipping stat-line entry for %s: %s", name, text[:60])
+                    continue
+
+                # ── Layer 2: Stale date filter ─────────────────────────────
+                # Parse "Mon DD:" prefix. If found and > 5 days ago, skip.
+                reported_at = now.isoformat()
+                m = self._ESPN_DATE_RE.match(text)
+                if m:
+                    day = int(m.group(1))
+                    # Extract month name from start of text
+                    month_str = text[:3].capitalize()
+                    _MONTH_MAP = {
+                        "Jan": 1,"Feb": 2,"Mar": 3,"Apr": 4,"May": 5,"Jun": 6,
+                        "Jul": 7,"Aug": 8,"Sep": 9,"Oct": 10,"Nov": 11,"Dec": 12,
+                    }
+                    month_num = _MONTH_MAP.get(month_str)
+                    if month_num:
+                        year = self._CURRENT_SEASON_YEAR
+                        # If month is in the future relative to now, it's last year
+                        if month_num > now.month:
+                            year -= 1
+                        try:
+                            entry_date = datetime(year, month_num, day, tzinfo=timezone.utc)
+                            age_days = (now - entry_date).days
+                            if age_days > 5:
+                                logger.debug(
+                                    "[espn] Skipping stale entry (%d days old) for %s: %s",
+                                    age_days, name, text[:60],
+                                )
+                                continue
+                            reported_at = entry_date.isoformat()
+                        except ValueError:
+                            pass  # invalid date — keep entry, use scrape time
+
+                # ── Layer 3: Text overrides status for explicit OUT language ─
+                # ESPN status field updates slower than the comment text.
+                # If text says "is out" / "ruled out" but status is still GTD,
+                # upgrade status to OUT so signal chain gives SCRATCHED.
+                effective_status = status
+                if effective_status.upper() in ("GTD", "QUESTIONABLE", "DAY-TO-DAY", "PROBABLE"):
+                    if _SCRATCHED_TEXT.search(text):
+                        effective_status = "OUT"
+                        logger.debug(
+                            "[espn] Upgraded %s from %s→OUT based on comment text",
+                            name, status,
+                        )
+
                 items.append({
                     "name":        name,
                     "text":        text,
-                    "status":      status,   # raw ESPN status for direct signal mapping
+                    "status":      effective_status,
                     "source":      "espn",
-                    "reported_at": datetime.utcnow().isoformat(),
+                    "reported_at": reported_at,
                 })
+
         return items
 
     def _fetch_fantasypros_news(self) -> list[dict]:

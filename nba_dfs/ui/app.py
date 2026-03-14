@@ -520,10 +520,42 @@ async def run_optimization(
                             + opt_players["proj_pts_dk"] * 0.25
                             + (1 - opt_players["proj_own"] / 100) * 10
                         ).round(3)
-                    # Store news exclusions in state — merged at generate_gpp_lineups call
+                    # Remove excluded players from pool NOW — before game theory,
+                    # adversarial ownership, and any other downstream step.
+                    # Previously they were only excluded at generate_gpp_lineups(),
+                    # which meant game theory flagged SCRATCHED players as chalk
+                    # (e.g. Siakam "OUT" still appeared as 30.5% chalk target).
                     if ni_excluded:
-                        _state["_ni_excluded"] = list(ni_excluded)
-                        print(f"[News] {len(ni_excluded)} players excluded by news signals")
+                        before = len(opt_players)
+                        opt_players = opt_players[
+                            ~opt_players["player_id"].astype(str).isin(ni_excluded)
+                        ].copy()
+                        print(f"[News] {len(ni_excluded)} players excluded by news signals "
+                              f"({before - len(opt_players)} removed from pool)")
+
+                    # Apply sub-$5K bench filter: remove players priced < $5,000
+                    # who have no confirmed role signal AND no FC mins >= 20.
+                    # Mirrors the same filter in test_slate.py main().
+                    _role_signal_pids = {
+                        pid for pid, imp in ni_impacts.items()
+                        if imp.get("signal_type", imp.get("signal", ""))
+                        in ("STARTING_REPLACEMENT", "USAGE_INCREASE", "CLEARED_FULLY")
+                    }
+                    if "salary" in opt_players.columns:
+                        _bench_mask   = opt_players["salary"] < 5000
+                        _no_signal    = ~opt_players["player_id"].astype(str).isin(_role_signal_pids)
+                        _fc_mins_col  = opt_players.get("fc_mins") if hasattr(opt_players, "get") \
+                                        else opt_players["fc_mins"] if "fc_mins" in opt_players.columns \
+                                        else None
+                        if _fc_mins_col is not None:
+                            _no_fc_mins = ~(opt_players["fc_mins"].notna() & (opt_players["fc_mins"] >= 20))
+                        else:
+                            _no_fc_mins = pd.Series(True, index=opt_players.index)
+                        _drop = _bench_mask & _no_signal & _no_fc_mins
+                        if _drop.any():
+                            opt_players = opt_players[~_drop].copy()
+                            print(f"[News] Bench filter removed {_drop.sum()} sub-$5K players "
+                                  f"with no confirmed role")
 
                 # Emit SSE event
                 q.put({"type": "news_intel", "data": {
@@ -741,9 +773,10 @@ async def run_optimization(
                 _advlog.warning("[Adv] Adversarial ownership analysis skipped: %s", _adve)
 
             _pool_size = int(pool_size) if pool_size and int(pool_size) > num_lineups else None
-            # Merge any news-intel exclusions collected during the run
-            _ni_excl = _state.pop("_ni_excluded", [])
-            _effective_excl = list(set((excl_list or []) + _ni_excl)) or None
+            # News-intel exclusions already removed from opt_players above.
+            # Only pass user-specified exclusions here.
+            _state.pop("_ni_excluded", None)   # clean up stale state if any
+            _effective_excl = list(excl_list) if excl_list else None
             lineups = generate_gpp_lineups(
                 opt_players,
                 n=_pool_size or num_lineups,

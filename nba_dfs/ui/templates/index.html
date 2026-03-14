@@ -550,23 +550,6 @@ tbody td{padding:9px 12px;white-space:nowrap}
       ▶ Run Optimizer
     </button>
     <div style="height:8px"></div>
-    <button class="btn btn-outline btn-full" id="b2b-btn" onclick="checkB2B()" disabled
-            title="Detect teams on B2B second night and apply fatigue/usage adjustments"
-            style="color:var(--gold);border-color:var(--gold)">
-      🔄 B2B Check
-    </button>
-    <div style="height:8px"></div>
-    <button class="btn btn-outline btn-full" id="injury-btn" onclick="checkInjuries()" disabled
-            title="Pull live ESPN injury data and flag affected lineups">
-      🏥 Injury Check
-    </button>
-    <div style="height:8px"></div>
-    <button class="btn btn-outline btn-full" id="starters-btn" onclick="checkStarters()" disabled
-            title="Check ESPN for confirmed starting lineups (~90 min before tip)"
-            style="color:var(--green);border-color:var(--green)">
-      ✓ Check Starters
-    </button>
-    <div style="height:8px"></div>
     <button class="btn btn-outline btn-full" id="late-swap-btn" onclick="lateSwap()" disabled
             title="Injury mode: replace OUT players. Contest mode (after uploading standings): upgrade unlocked slots using real ownership + field data."
             style="color:var(--gold);border-color:var(--gold)">
@@ -600,20 +583,6 @@ tbody td{padding:9px 12px;white-space:nowrap}
             title="Upload DraftKings contest standings CSV to use real ownership and field lineups for Late Swap"
             style="color:var(--blue);border-color:var(--blue);font-size:12px">
       📊 Upload Contest Data
-    </button>
-    <div style="height:8px"></div>
-    <button class="btn btn-outline btn-full" id="vegas-btn"
-            onclick="openVegasModal()" disabled
-            title="Enter real Vegas O/U lines to refine game total estimates and player projections"
-            style="color:var(--green);border-color:var(--green);font-size:12px">
-      📈 Vegas Lines
-    </button>
-    <div style="height:8px"></div>
-    <button class="btn btn-outline btn-full" id="matchup-btn"
-            onclick="loadMatchupAnalysis()" disabled
-            title="Fetch live NBA defensive ratings and grade each game A–F for DFS opportunity"
-            style="color:#ffc107;border-color:#ffc107;font-size:12px">
-      🔍 Analyze Matchups
     </button>
   </div>
 
