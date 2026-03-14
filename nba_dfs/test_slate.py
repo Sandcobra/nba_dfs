@@ -3372,7 +3372,7 @@ def generate_gpp_lineups(
             else:
                 _dvp_mult = 1.0
 
-            # Component 3: injury-value bonus — game gets +5% when a cheap
+            # Component 3: injury-value bonus — game gets +5-8% when a cheap
             # player (<$4.5K) has fc_proj significantly above their avg_pts
             # (signal that they're filling in for an OUT starter)
             _injury_bonus = 1.0
@@ -3386,7 +3386,24 @@ def generate_gpp_lineups(
                     elif _avg > 3 and _fc > _avg * 1.25:
                         _injury_bonus = max(_injury_bonus, 1.04)
 
-            _matchup_composite[_mg] = _gt * _dvp_mult * _injury_bonus
+            # Component 4: value density bonus — when a team has 3+ players
+            # all with value_score (fc_proj / salary_k) > 5.0, their game is
+            # a must-stack regardless of O/U. Each extra high-value player above
+            # the 3rd adds +8%. This captures injury-replacement concentrated slates
+            # (e.g. MEM 3/12 with 6 players at 6+ value, MIA 3/10 with 7 players).
+            _val_density_bonus = 1.0
+            if "fc_proj" in players.columns and "salary" in players.columns:
+                _val_thresh = 5.0
+                _min_hv = 3
+                _max_hv_team = 0
+                for _, _tgp in _gp.groupby("team"):
+                    _val_scores = (_tgp["fc_proj"] / (_tgp["salary"] / 1000)).fillna(0)
+                    _n_hv = int((_val_scores > _val_thresh).sum())
+                    _max_hv_team = max(_max_hv_team, _n_hv)
+                if _max_hv_team >= _min_hv:
+                    _val_density_bonus = 1.0 + (_max_hv_team - _min_hv + 1) * 0.08
+
+            _matchup_composite[_mg] = _gt * _dvp_mult * _injury_bonus * _val_density_bonus
 
         stack_games = sorted(_matchup_composite, key=lambda g: -_matchup_composite[g])
 
@@ -3402,7 +3419,13 @@ def generate_gpp_lineups(
                 _dvp_str = f"dvp_mult={_top4_2['dvp_mult'].fillna(1.0).mean():.3f}"
             else:
                 _dvp_str = "DVP=n/a"
-            print(f"    {_mg:<22s} composite={_s:.1f}  (O/U={_gt_v:.0f}  {_dvp_str})")
+            # Show value density count for this game
+            _vd_count = 0
+            if "fc_proj" in players.columns and "salary" in players.columns:
+                for _, _tgp in _gp2.groupby("team"):
+                    _vs = (_tgp["fc_proj"] / (_tgp["salary"] / 1000)).fillna(0)
+                    _vd_count = max(_vd_count, int((_vs > 5.0).sum()))
+            print(f"    {_mg:<22s} composite={_s:.1f}  (O/U={_gt_v:.0f}  {_dvp_str}  val_density={_vd_count})")
 
     # ── Corr model reordering (primary signal — overrides composite when available) ─
     try:
