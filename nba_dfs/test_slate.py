@@ -2755,6 +2755,15 @@ def build_lineup(
             # At least one game must have zg=1
             prob += pulp.lpSum(z_game.values()) >= 1
 
+    # Hard stack-game constraint: when a specific game is designated as the stack,
+    # FORCE ≥3 players from that game. The soft 20% score bonus alone is not enough —
+    # the ILP will freely pick a different game if it scores higher overall.
+    # This is why lineups on 3/13D ignored the top game: no hard constraint enforced it.
+    if stack_game and "matchup" in players.columns:
+        _hard_sg_idx = [i for i in idx if players["matchup"].iloc[i] == stack_game]
+        if len(_hard_sg_idx) >= 3:
+            prob += pulp.lpSum(x[i] for i in _hard_sg_idx) >= 3
+
     # Salary barbell structure: driven by SlateConstructionAgent parameters.
     # Thresholds and minimums are adaptive to tonight's slate salary distribution.
     # barbell_params=None means no barbell constraint (unconstrained optimization).
