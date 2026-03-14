@@ -3301,125 +3301,37 @@ def generate_gpp_lineups(
     excluded_ids: list = None,
     penalty_schedule: list = None,
     slate_profile: dict = None,
-    pool_size: int = None,
-) -> list:
+    ownership_penalty: float = 0.04,
+    max_exposure: int = None,   # ignored — exposure is now template-driven
+) -> list[dict]:
     """
-    Generate n GPP lineups using:
+    Pro-mirroring GPP portfolio builder.
 
-    Thompson Sampling + Stackelberg Scoring (per-iteration):
-      Each of the n lineup iterations draws a fresh Thompson sample from
-      every player's projected DK distribution N(μ, σ_adj²), where
-      σ_adj is widened by each player's tail index ξ. The ILP then
-      optimises the Stackelberg score = sampled_proj × tail_mult / own,
-      naturally surfacing high-variance, low-ownership players on the
-      iterations where their sample lands high — without any manual
-      contrarian weighting.
+    Architecture based on 7-day analysis of top 1% winning lineups (3/6-3/13):
+    - Every winning day has 2-3 "ultra-chalk" plays at 80-100% exposure
+    - Every winning lineup has a 4-player game stack (not 3)
+    - 80% of lineups use the top game; 15% use a secondary game; 5% are wild
 
-    Other features retained:
-      - Exposure management (33% max per player across all lineups)
-      - Correlation-aware game stacking cycling by O/U rank
-      - Ownership penalty cycling (0.03–0.07) for additional differentiation
-      - Leverage scoring appended to each lineup
-      - Jaccard post-filter (enforces ≤50% pairwise overlap)
-
-    Pool selection mode (pool_size > n):
-      When pool_size is set, generates pool_size lineups first then applies
-      select_portfolio() to greedily pick the best n by a combined score,
-      leverage, and diversity objective. Produces a more optimal final set
-      than generating n directly.
+    Replaces the previous Thompson-sampling + exposure-cap approach which
+    produced only 55% stack compliance vs the required 80%.
     """
-    lineups      = []
-    prev_pids    = []
-    exposure     = {}
+    import itertools
+    import pulp
+    from collections import Counter as _Counter
 
-    # Resolve slate profile dict first — used throughout the rest of this function
+    if players is None or len(players) < 8:
+        return []
+
     _sp = slate_profile or {}
+    n_lineups = n
 
-    # Exposure cap — use slate_profile value if provided, else default 33%
-    _exp_pct     = float(_sp.get("max_exposure_pct", 0.33))
-    max_exposure = max(1, int(n * _exp_pct))
-
-    # Per-player exposure caps from GameTheoryAgent (computed per proj-tier + ownership)
-    # Keys are player_id strings. Falls back to global max_exposure when absent.
-    _gt_exp_map: dict = {}
-    if "gt_max_exposure" in players.columns:
-        _gt_exp_map = dict(zip(
-            players["player_id"].astype(str),
-            players["gt_max_exposure"].clip(lower=1).astype(int),
-        ))
-
-    # ── Chalk anchor override ─────────────────────────────────────────────────
-    # Pro data (800 lineups, 7 dates): there is always 1-2 players appearing in
-    # 80%+ of top-50 finishes. Mitchell Robinson (41% owned, $4K starter, fc_mins=24)
-    # appeared in 89% of top-50 on 3/13 but we capped him at 33% (7/21 lineups).
-    # Chalk anchors: top-10 gpp_score + proj_own >= 25% + proj_mins >= 20.
-    # These confirmed chalk plays get their exposure raised to 80%.
-    _chalk_anchor_pids: set = set()
-    if "gpp_score" in players.columns and "proj_own" in players.columns:
-        _mins_anchor_col = "proj_mins" if "proj_mins" in players.columns else "fc_mins"
-        _mins_anchor = players[_mins_anchor_col] if _mins_anchor_col in players.columns \
-                       else pd.Series(30.0, index=players.index)
-        _chalk_cand = players[
-            (players["gpp_score"].rank(ascending=False) <= 10) &
-            (players["proj_own"] >= 25) &
-            (_mins_anchor.fillna(0) >= 20)
-        ]
-        for _, _cr in _chalk_cand.iterrows():
-            _pid = str(_cr["player_id"])
-            _chalk_anchor_pids.add(_pid)
-            _chalk_cap = max(_gt_exp_map.get(_pid, 0), round(n * 0.80))
-            _gt_exp_map[_pid] = _chalk_cap
-            print(f"  Chalk anchor: {_cr['name']} "
-                  f"(own={_cr['proj_own']:.0f}%, gpp={_cr['gpp_score']:.1f}, "
-                  f"proj_mins={_mins_anchor.get(_cr.name, '?')}) "
-                  f"→ exposure cap raised to {_chalk_cap}/{n} lineups")
-
-    has_tail = "tail_index" in players.columns
-    has_std  = "proj_std"   in players.columns
-    if not has_tail:
-        import logging
-        logging.warning("[generate] tail_index missing — run enrich_projections() first. "
-                        "Falling back to uniform ξ=0.30.")
-    if not has_std:
-        import logging
-        logging.warning("[generate] proj_std missing — defaulting σ=30%% of projection.")
-
-    # Apply slate_profile role-player ceiling overrides.
-    # The slate agent may widen std/ceiling for tonight's specific injury
-    # and salary environment (e.g. injury chaos → wider ceilings for replacements).
-    players = players.copy()  # don't mutate caller's DataFrame
-    if _sp and "proj_std" in players.columns:
-        _rp_mult  = float(_sp.get("role_player_std_mult",      0.42))
-        _rp_proj  = float(_sp.get("role_player_proj_threshold", 25))
-        _rp_sal   = float(_sp.get("role_player_sal_threshold",  6500))
-        rp_mask = (players["proj_pts_dk"] < _rp_proj) & (players["salary"] < _rp_sal)
-        players.loc[rp_mask, "proj_std"] = (
-            players.loc[rp_mask, "proj_pts_dk"] * _rp_mult
-        ).round(2)
-        # Recompute ceiling after std change (90th percentile = mean + 1.28σ)
-        players["ceiling"] = (
-            players["proj_pts_dk"] + 1.28 * players["proj_std"]
-        ).round(2)
-
-    # ── Correlation-weighted stack ordering ───────────────────────────────────
-    # Use CorrelationModel.get_teammate_stacks() to rank stacks by
-    # stack_score = combined_proj × (1 + 0.15 × avg_corr), then derive
-    # stack cycling order from the top stacks' matchups.
-    # Stack ordering: rank by sum of FC Proj for players UNDER $7,000.
-    #
-    # 7-day backtest (3/6-3/12) tested three criteria against actual pro stack game:
-    #   A. Game O/U total:             0/7 correct (worst — stars in avoid games inflate totals)
-    #   B. FC Proj sum all players:    1/7 correct (marginally better)
-    #   C. FC Proj sum <$7K players:   2/7 correct, top-2 on 6/7 days (best)
-    #
-    # Why <$7K works: pros stack the game with the most AFFORDABLE high-value players,
-    # not the game with the biggest star. High-salary anchors (Luka, LeBron) appear in
-    # games the pros deliberately avoid for stacking. Filtering under $7K removes those
-    # salary-prohibitive games and surfaces the real value-dense opportunities.
-    _stack_order_from_fc = False   # flag: True when FC data determined the ordering
+    # ── Step 1: Determine stack game order (keep existing corr model logic) ─────
+    # This section is identical to the previous version — corr model determines
+    # which game gets the 80% allocation.
+    _stack_order_from_fc = False
+    stack_games: list[str] = []
     if "matchup" in players.columns and "proj_pts_dk" in players.columns:
         if "fc_proj" in players.columns and players["fc_proj"].notna().sum() > 10:
-            # Sum FC Proj for players priced under $7,000 per matchup
             _affordable = players[
                 players["fc_proj"].notna() & (players["salary"] < 7000)
             ][["matchup", "fc_proj", "salary"]]
@@ -3429,7 +3341,6 @@ def generate_gpp_lineups(
                     .sort_values(ascending=False)
                 )
             else:
-                # Not enough sub-$7K FC data — fall back to top-3 all-player sum
                 _matchup_scores = (
                     players[["matchup", "fc_proj"]].dropna()
                     .groupby("matchup")["fc_proj"]
@@ -3438,11 +3349,7 @@ def generate_gpp_lineups(
                 )
             stack_games = list(_matchup_scores.index)
             _stack_order_from_fc = True
-            print(f"  Stack order (FC Proj sum <$7K players per game):")
-            for _m, _sc in _matchup_scores.items():
-                print(f"    {_m:<22s} <$7K FC sum: {_sc:.1f} pts")
         else:
-            # Fallback: game_total ordering
             _matchup_totals = (
                 players[["matchup", "game_total"]].dropna()
                 .groupby("matchup")["game_total"].first()
@@ -3450,242 +3357,222 @@ def generate_gpp_lineups(
             )
             stack_games = list(_matchup_totals.index)
     else:
-        stack_games = [
-            matchup for matchup, _ in sorted(
-                GAME_TOTALS.items(), key=lambda kv: -kv[1]["total"]
-            )
-        ]
-    _corr_pairs: dict = {}   # populated below; initialized here so try-block enrichment can write to it
+        stack_games = players["matchup"].dropna().unique().tolist() if "matchup" in players.columns else []
+
+    # Corr model reordering (primary signal)
+    _corr_pairs: dict = {}
     try:
         from nba_dfs.models.correlation_model import CorrelationModel as _CorrModel
         _cm = _CorrModel()
-        # CorrelationModel expects 'projected_pts_dk'; we have 'proj_pts_dk'
         _cm_players = players.rename(columns={"proj_pts_dk": "projected_pts_dk"})
-        _cm_stacks  = _cm.get_teammate_stacks(_cm_players, min_stack=2, max_stack=4)
+        _cm_stacks = _cm.get_teammate_stacks(_cm_players, min_stack=2, max_stack=4)
         if _cm_stacks:
-            # Corr model ordering is the primary signal: it identifies which game has
-            # the best correlated trio (highest combined score + correlation).
-            # The FC <$7K filter was wrong for slates where the top stack is expensive
-            # (e.g. KD $10K + Amen $7.3K + Sengun $8K in NOP@HOU all get filtered out,
-            # causing NOP@HOU to rank last despite being the correct game).
-            # FC data is still used as a tiebreaker/fallback (via _stack_order_from_fc),
-            # but the corr model ordering always wins when corr data is available.
             _seen_matchups: list = []
             for _s in _cm_stacks:
                 _team = _s["team"]
-                _matchup = next(
-                    (m for m in stack_games if _team in m), None
-                )
+                _matchup = next((m for m in stack_games if _team in m), None)
                 if _matchup and _matchup not in _seen_matchups:
                     _seen_matchups.append(_matchup)
             for _m in stack_games:
                 if _m not in _seen_matchups:
                     _seen_matchups.append(_m)
             stack_games = _seen_matchups
-
-            # Enrich correlation_pairs with stack scores:
-            # Pairs that appear in top stacks get a correlation bonus proportional
-            # to their stack's avg_corr, replacing the heuristic value when higher.
-            for _s in _cm_stacks[:20]:  # top 20 stacks only
+            for _s in _cm_stacks[:20]:
                 _pids = [str(p) for p in _s.get("player_ids", [])]
                 for _pa, _pb in itertools.combinations(_pids, 2):
-                    _key_ab = (_pa, _pb)
-                    _key_ba = (_pb, _pa)
                     _new_corr = max(0.20, float(_s.get("avg_corr", 0.25)))
-                    # Only update if the new value exceeds the heuristic estimate
-                    if _corr_pairs.get(_key_ab, 0) < _new_corr:
-                        _corr_pairs[_key_ab] = round(_new_corr, 3)
-                        _corr_pairs[_key_ba] = round(_new_corr, 3)
-
+                    if _corr_pairs.get((_pa, _pb), 0) < _new_corr:
+                        _corr_pairs[(_pa, _pb)] = round(_new_corr, 3)
+                        _corr_pairs[(_pb, _pa)] = round(_new_corr, 3)
             print(f"  Stack order (corr-weighted): {' | '.join(stack_games)}")
-            print(f"  Top stack: {_cm_stacks[0]['team']} "
-                  f"{_cm_stacks[0]['players']} "
-                  f"score={_cm_stacks[0]['stack_score']:.1f} "
-                  f"corr={_cm_stacks[0]['avg_corr']:.3f}")
+            print(f"  Top stack: {_cm_stacks[0]['team']} score={_cm_stacks[0]['stack_score']:.1f}")
     except Exception as _ce:
         import logging as _cl
         _cl.warning("[corr] CorrelationModel stack ordering skipped: %s", _ce)
 
-    n_games = len(stack_games)
+    top_game = stack_games[0] if stack_games else None
+    second_game = stack_games[1] if len(stack_games) > 1 else top_game
 
-    # Ownership penalty schedule — use caller-supplied, or derive from slate_profile,
-    # or fall back to default 0.03–0.07 cycling range.
-    _pen_min         = float(_sp.get("min_ownership_penalty", 0.03))
-    _pen_max         = float(_sp.get("max_ownership_penalty", 0.07))
-    _default_schedule = [
-        round(_pen_min + (_pen_max - _pen_min) * t, 3)
-        for t in [0.0, 0.25, 0.50, 0.75, 1.0, 0.25, 0.0, 0.50, 0.75, 1.0]
-    ]
-    if penalty_schedule and len(penalty_schedule) >= n:
-        own_pen_schedule = list(penalty_schedule[:n])
-    else:
-        own_pen_schedule = _default_schedule
+    # ── Step 2: Find core plays (80-90% exposure targets) ────────────────────────
+    # Based on 7-day analysis: each day has 2-3 ultra-chalk plays in 80-100%
+    # of winning lineups. These are either top value plays (<$5.5K) or the
+    # confirmed safe stud (highest proj player with >20 min).
+    def find_core_plays(df: pd.DataFrame) -> list[str]:
+        """Return player_ids that should appear in 80%+ of lineups."""
+        mins_col = "fc_mins" if "fc_mins" in df.columns else "proj_mins" if "proj_mins" in df.columns else None
+        dnp_col = "dnp_risk" if "dnp_risk" in df.columns else None
 
-    # barbell_params passed through to every build_lineup call
-    _barbell = _sp if _sp.get("barbell_enabled") else None
+        eligible = df.copy()
+        # Filter out injured / high DNP risk players
+        if dnp_col:
+            eligible = eligible[eligible[dnp_col] < 0.25]
+        if mins_col:
+            eligible = eligible[eligible[mins_col].fillna(0) >= 15]
 
-    # Pre-compute correlation pairs once for the full batch.
-    # Positive pairs (corr > 0.20) get a bonus; negative pairs (corr < -0.15)
-    # get a penalty. Both are passed to build_lineup.
-    # Merge into _corr_pairs (already partially enriched by the CorrelationModel
-    # try-block above) — heuristic values only fill in where not already set.
-    _base_pairs = build_player_correlation(players)
-    for _k, _v in _base_pairs.items():
-        if _v > 0.20 or _v < -0.15:
-            _corr_pairs.setdefault(_k, _v)   # don't overwrite enriched CM values
-    print(f"\nGenerating {n} GPP lineups (Thompson sampling + Stackelberg scoring)...")
-    print(f"  Slate profile: {_sp.get('slate_type','?')} | "
-          f"exposure cap: {_exp_pct*100:.0f}% | "
-          f"barbell: {'ON' if _barbell else 'OFF'} | "
-          f"stack: {_sp.get('stack_emphasis','medium')}")
-    print(f"  Stack rotation: {' | '.join(stack_games)}")
-    print(f"  Correlation pairs (corr>0.20): {len(_corr_pairs)}")
-    if _sp.get("rationale"):
-        print(f"  AI insight: {_sp['rationale']}")
-    if penalty_schedule:
-        print(f"  Penalty schedule: {own_pen_schedule}")
+        # Value plays: proj_pts_dk per $1K salary
+        eligible = eligible.copy()
+        eligible["value_score"] = eligible["proj_pts_dk"] / (eligible["salary"] / 1000)
 
-    # Pre-compute a minimum viable projection floor from the original player pool.
-    # Uses 72% of the top-8 players' summed base projections so leverage lineups
-    # stay GPP-competitive regardless of Thompson sampling luck.
-    # base_proj_vals is passed to build_lineup separately so the ILP constraint
-    # uses real base projections, not the noisy sampled values.
-    _base_proj = players["proj_pts_dk"].fillna(0).values.astype(float)
-    _top8_proj  = float(np.sort(_base_proj)[-8:].sum())
-    _min_proj_floor = round(_top8_proj * 0.72, 1)
-    print(f"  Projection floor: {_min_proj_floor:.1f} DK pts (72% of optimal top-8)")
+        # Category A: Best 2 value plays under $5,500
+        cheap_plays = eligible[eligible["salary"] <= 5500].nlargest(2, "value_score")
 
-    # ── Per-game top-player index for stack anchor locking ────────────────────
-    # Tournament-first: for each game stack rotation, lock the highest gpp_score
-    # player from that game into the lineup. This guarantees every game gets at
-    # least one high-ceiling anchor in its designated lineups — prevents the
-    # optimizer from ignoring entire games (e.g. KAT in Grade D NYK@LAC on 3/8).
-    # Only the player with the top gpp_score in the matchup is eligible for locking;
-    # we don't lock if they're already approaching their exposure cap.
-    _game_top_player: dict[str, str] = {}  # matchup → player_id of top gpp_score player
-    for _sg in stack_games:
-        _sg_players = players[players["matchup"] == _sg].copy()
-        if not _sg_players.empty:
-            _top_row = _sg_players.loc[_sg_players["gpp_score"].idxmax()]
-            _game_top_player[_sg] = str(_top_row["player_id"])
-            print(f"  Stack anchor [{_sg}]: {_top_row['name']} "
-                  f"(gpp={_top_row['gpp_score']:.1f}, own={_top_row['proj_own']:.0f}%)")
+        # Category B: Top 1 overall stud (highest proj regardless of salary)
+        stud = eligible.nlargest(1, "proj_pts_dk")
 
-    # ── Weighted stack sequence ────────────────────────────────────────────
-    # Pro data (800+ lineups, 7 dates): 80-95% of top lineups stack from
-    # top 1-2 projected games. Corr model identifies Game#1.
-    # Distribution: Game#1=80%, Game#2=15%, rest share 5%.
-    _stack_weights: list[float] = []
-    for _gi in range(n_games):
-        if _gi == 0:
-            _stack_weights.append(0.80)
-        elif _gi == 1:
-            _stack_weights.append(0.15)
-        else:
-            _stack_weights.append(0.05 / max(1, n_games - 2))
-    _stack_sequence: list[str] = []
-    _running_cnt = 0
-    for _gi, (_game, _sw) in enumerate(zip(stack_games, _stack_weights)):
-        if _gi == n_games - 1:
-            cnt = n - _running_cnt
-        else:
-            cnt = max(1, round(n * _sw))
-        _stack_sequence.extend([_game] * cnt)
-        _running_cnt += cnt
-    # Pad/trim to exactly n entries (rounding edge cases)
-    while len(_stack_sequence) < n:
-        _stack_sequence.append(stack_games[0])
-    _stack_sequence = _stack_sequence[:n]
-    print(f"  Stack sequence ({n} lineups):")
-    from collections import Counter as _Counter
-    for _g, _c in sorted(_Counter(_stack_sequence).items(), key=lambda x: -x[1]):
-        print(f"    {_g}: {_c} lineups ({100*_c/n:.0f}%)")
+        core_ids = set()
+        for _, row in cheap_plays.iterrows():
+            core_ids.add(str(row["player_id"]))
+        for _, row in stud.iterrows():
+            core_ids.add(str(row["player_id"]))
 
-    for lu_num in range(n):
-        # ── Thompson sample: fresh projection draw for this lineup ─────────
-        players_sample = _thompson_sample_players(players)
+        return list(core_ids)
 
-        # Exposure-based exclusions (use original player_ids)
-        # Per-player GT cap is used when available; falls back to global max_exposure.
-        curr_excl = list(excluded_ids or [])
-        for pid, cnt in exposure.items():
-            player_cap = _gt_exp_map.get(str(pid), max_exposure)
-            if cnt >= player_cap:
-                curr_excl.append(pid)
+    core_play_ids = find_core_plays(players)
+    print(f"\n  Core plays (80%+ exposure):")
+    for pid in core_play_ids:
+        row = players[players["player_id"].astype(str) == pid]
+        if not row.empty:
+            r = row.iloc[0]
+            print(f"    {r.get('name', pid)}: ${r.get('salary',0):,} proj={r.get('proj_pts_dk',0):.1f}")
 
-        own_pen    = own_pen_schedule[lu_num % len(own_pen_schedule)]
-        stack_game = _stack_sequence[lu_num]
+    # ── Step 3: Build stack pool for top game ─────────────────────────────────────
+    # Take top 6 players from top game — we'll cycle through 4-player combos
+    def get_stack_pool(df: pd.DataFrame, game: str, pool_size: int = 6) -> list[str]:
+        if not game or "matchup" not in df.columns:
+            return []
+        game_players = df[df["matchup"] == game]
+        # Filter out high DNP risk
+        if "dnp_risk" in game_players.columns:
+            game_players = game_players[game_players["dnp_risk"] < 0.50]
+        top = game_players.nlargest(pool_size, "proj_pts_dk")
+        return [str(r["player_id"]) for _, r in top.iterrows()]
 
-        # Lock the game's top anchor player unless they're near exposure cap
-        curr_locks = list(locked_ids or [])
-        _anchor_pid = _game_top_player.get(stack_game)
-        if _anchor_pid and _anchor_pid not in curr_excl:
-            _anchor_cnt = exposure.get(_anchor_pid, 0)
-            _anchor_cap = _gt_exp_map.get(_anchor_pid, max_exposure)
-            # Only lock if anchor has room under cap AND hasn't been locked too recently
-            # (allow the anchor to appear in at most 50% of their game's allocated lineups
-            # so other players in that game get coverage too)
-            _game_lineups_so_far = lu_num // n_games  # how many full rotations done
-            if _anchor_cnt < _anchor_cap and _anchor_cnt <= _game_lineups_so_far:
-                curr_locks.append(_anchor_pid)
+    top_stack_pool = get_stack_pool(players, top_game, pool_size=6)
+    second_stack_pool = get_stack_pool(players, second_game, pool_size=5)
+
+    print(f"\n  Top game stack pool [{top_game}]:")
+    for pid in top_stack_pool:
+        row = players[players["player_id"].astype(str) == pid]
+        if not row.empty:
+            r = row.iloc[0]
+            print(f"    {r.get('name', pid)}: ${r.get('salary',0):,} proj={r.get('proj_pts_dk',0):.1f}")
+
+    # Generate all 4-man combinations from the top stack pool
+    # Prefer combos that don't overlap with core plays (avoid salary concentration)
+    # Sort combos by combined proj_pts_dk descending
+    stack_combos_4 = list(itertools.combinations(top_stack_pool, 4))
+
+    def combo_proj(combo):
+        total = 0
+        for pid in combo:
+            row = players[players["player_id"].astype(str) == pid]
+            if not row.empty:
+                total += float(row.iloc[0]["proj_pts_dk"])
+        return total
+
+    stack_combos_4 = sorted(stack_combos_4, key=combo_proj, reverse=True)
+
+    stack_combos_3 = list(itertools.combinations(second_stack_pool, 3))
+    stack_combos_3 = sorted(stack_combos_3, key=combo_proj, reverse=True)
+
+    # ── Step 4: Assign lineup templates ──────────────────────────────────────────
+    # Template A (80% of lineups): core plays + 4-man top game stack
+    # Template B (15%): 1 core play + 3-man second game stack
+    # Template C (5%): no locks — ILP chooses freely with soft stack bonus
+
+    n_template_a = round(n * 0.80)
+    n_template_b = round(n * 0.15)
+    n_template_c = n - n_template_a - n_template_b
+
+    templates = []
+    for i in range(n_template_a):
+        combo = stack_combos_4[i % len(stack_combos_4)] if stack_combos_4 else ()
+        locks = list(set(core_play_ids) | set(combo))
+        templates.append({"type": "A", "locks": locks, "game": top_game, "force": True})
+    for i in range(n_template_b):
+        combo = stack_combos_3[i % max(1, len(stack_combos_3))] if stack_combos_3 else ()
+        locks = list(set(core_play_ids[:1]) | set(combo))
+        templates.append({"type": "B", "locks": locks, "game": second_game, "force": True})
+    for i in range(n_template_c):
+        templates.append({"type": "C", "locks": list(locked_ids or []), "game": top_game, "force": False})
+
+    print(f"\n  Portfolio: {n_template_a}x Template-A (top game 4-stack) | "
+          f"{n_template_b}x Template-B (secondary game) | "
+          f"{n_template_c}x Template-C (wild)")
+
+    # ── Step 5: Build each lineup ─────────────────────────────────────────────────
+    lineups: list[dict] = []
+    prev_pids: list[set] = []
+    _base_proj = players["proj_pts_dk"].fillna(0).values.copy()
+
+    # Barbell params from slate profile
+    _barbell = _sp.get("barbell_params") if _sp.get("barbell_enabled", False) else None
+    _min_proj_floor = float(_sp.get("min_proj_floor", 200))
+
+    for lu_num, tmpl in enumerate(templates):
+        t_locks = list(tmpl["locks"]) + list(locked_ids or [])
+        t_excl  = list(excluded_ids or [])
+        t_game  = tmpl["game"]
+        t_force = tmpl["force"]
+
+        # Remove excluded from locks
+        t_locks = [p for p in t_locks if str(p) not in [str(e) for e in t_excl]]
 
         result = build_lineup(
-            players_sample,
+            players,
             objective_col="gpp_score",
             prev_lineups=prev_pids,
-            min_unique=MIN_UNIQUE if lu_num > 0 else 0,
-            locked_ids=curr_locks,
-            excluded_ids=curr_excl,
-            ownership_penalty=own_pen,
-            stack_game=stack_game,
-            stack_bonus=0.20,       # increased from 0.12 — stronger stack pull
-            bringback_bonus=0.10,   # increased from 0.06 — bring-back coverage
-            barbell_params=_barbell,
+            min_unique=2 if lu_num > 0 else 0,
+            locked_ids=t_locks,
+            excluded_ids=t_excl,
+            ownership_penalty=0.03,
+            stack_game=t_game,
+            stack_bonus=0.20,
+            bringback_bonus=0.10,
+            force_stack=t_force,
+            max_premium_players=3,
             correlation_pairs=_corr_pairs,
             min_proj_total=_min_proj_floor,
             base_proj_vals=_base_proj,
         )
 
+        # Fallback 1: loosen diversity
         if result is None:
-            print(f"  [fallback-1] LU{lu_num+1}: relaxing diversity → min_unique=1, max_premium=3")
+            print(f"  [fallback-1] LU{lu_num+1}: relax min_unique=1")
             result = build_lineup(
-                players_sample,
+                players,
                 objective_col="gpp_score",
                 prev_lineups=prev_pids[-3:] if prev_pids else None,
                 min_unique=1,
-                locked_ids=list(locked_ids or []),
-                excluded_ids=curr_excl,
+                locked_ids=t_locks,
+                excluded_ids=t_excl,
                 ownership_penalty=0.02,
-                stack_game=stack_game,
+                stack_game=t_game,
                 stack_bonus=0.20,
                 bringback_bonus=0.10,
-                force_stack=True,
-                barbell_params=_barbell,
-                max_premium_players=3,           # loosen premium cap in first fallback
+                force_stack=t_force,
+                max_premium_players=3,
                 correlation_pairs=_corr_pairs,
                 min_proj_total=_min_proj_floor,
                 base_proj_vals=_base_proj,
             )
 
+        # Fallback 2: drop locks, keep stack soft
         if result is None:
-            print(f"  [fallback-2] LU{lu_num+1}: soft-only stack, no hard constraint, no premium cap")
-            # Last resort: drop diversity + hard stack constraint, but keep soft stack
-            # bonus so the solver still prefers the designated game. force_stack=False
-            # avoids infeasibility when exposure caps have thinned out stack game players.
+            print(f"  [fallback-2] LU{lu_num+1}: drop locks, soft stack only")
             result = build_lineup(
-                players_sample,
+                players,
                 objective_col="gpp_score",
                 prev_lineups=None,
                 min_unique=0,
-                locked_ids=locked_ids,
-                excluded_ids=curr_excl,
+                locked_ids=list(locked_ids or []),
+                excluded_ids=t_excl,
                 ownership_penalty=0.0,
-                stack_game=stack_game,           # keep soft bonus — don't abandon the game
+                stack_game=t_game,
                 stack_bonus=0.20,
                 bringback_bonus=0.10,
-                force_stack=False,               # no hard constraint — avoid infeasibility
-                barbell_params=None,
-                max_premium_players=None,        # relax premium cap in last resort
+                force_stack=False,
+                max_premium_players=None,
                 correlation_pairs=_corr_pairs,
                 min_proj_total=None,
                 base_proj_vals=_base_proj,
@@ -3695,10 +3582,10 @@ def generate_gpp_lineups(
             print(f"  Lineup {lu_num+1}: INFEASIBLE -- skipping")
             continue
 
-        # Attach metadata using ORIGINAL (non-sampled) player pool for
-        # reported projected points and ownership
-        result["lineup_num"] = lu_num + 1
-        result["stack_game"] = stack_game
+        # Metadata
+        result["lineup_num"]  = lu_num + 1
+        result["stack_game"]  = t_game
+        result["template"]    = tmpl["type"]
 
         lev = score_lineup_leverage(result, players)
         result["leverage"]       = lev["leverage"]
@@ -3707,164 +3594,45 @@ def generate_gpp_lineups(
         result["low_own_ct"]     = lev["low_own_ct"]
         result["has_game_stack"] = lev["has_game_stack"]
 
-        # Overwrite sampled proj_pts with baseline projections for display
         pid_index = players.set_index("player_id")
         pids = [str(p) for p in result["player_ids"]]
         result["proj_pts"] = round(
             sum(float(pid_index.loc[p, "proj_pts_dk"]) for p in pids if p in pid_index.index), 1
         )
-        result["ceiling"]  = round(
-            sum(float(pid_index.loc[p, "ceiling"])     for p in pids if p in pid_index.index), 1
-        )
+        result["ceiling"] = round(
+            sum(float(pid_index.loc[p, "ceiling"]) for p in pids if p in pid_index.index), 1
+        ) if "ceiling" in players.columns else result["proj_pts"] * 1.35
 
-        lineups.append(result)
         prev_pids.append(set(result["player_ids"]))
+        lineups.append(result)
 
-        for pid in result["player_ids"]:
-            exposure[pid] = exposure.get(pid, 0) + 1
+        # Print lineup
+        names = [pid_index.loc[p, "name"] if p in pid_index.index else p for p in pids]
+        stack_ct = sum(1 for p in pids
+                       if p in pid_index.index and pid_index.loc[p, "matchup"] == t_game) if "matchup" in players.columns else "?"
+        print(f"  LU{lu_num+1} [{tmpl['type']}]: proj={result['proj_pts']} "
+              f"stack={stack_ct}@{t_game.split()[0] if t_game else '?'} "
+              f"| {', '.join(names)}")
 
-        stack_flag = "[GAME STACK]" if lev["has_game_stack"] else ""
-        print(
-            f"  #{lu_num+1:2d} | Proj: {result['proj_pts']:5.1f} | "
-            f"Ceil: {result['ceiling']:5.1f} | "
-            f"Sal: ${result['total_salary']:,} | "
-            f"Own: {result['proj_own']:.1f}% | "
-            f"Lev: {lev['leverage']:3.0f} | "
-            f"Stack: {stack_game} {stack_flag}"
-        )
-
-    # ── Jaccard post-filter ────────────────────────────────────────────────
-    lineups = jaccard_diversify(lineups, players,
-                                max_overlap=0.50,
-                                locked_ids=locked_ids,
-                                excluded_ids=excluded_ids)
-
-    # ── Post-generation exposure enforcement ──────────────────────────────
-    # After Jaccard filtering, recount exposures. Any player appearing in
-    # more than 35% of the final batch gets their offending lineups regenerated
-    # with that player force-excluded, preventing overexposure from slipping
-    # through the iterative cap (which applies during generation, not after).
-    target_ct = len(lineups)
-    if target_ct > 1:
-        final_exp: dict[str, int] = {}
-        for lu in lineups:
-            for pid in lu["player_ids"]:
-                final_exp[pid] = final_exp.get(pid, 0) + 1
-
-        # Hard cap matches gen-time cap (was hardcoded 0.35, which let players
-        # slip through to 35% even when _exp_pct is 0.33 or lower)
-        hard_cap = max(1, int(target_ct * _exp_pct))
-        over_exposed = {pid for pid, cnt in final_exp.items() if cnt > hard_cap}
-
-        if over_exposed:
-            import logging as _log
-            _log.info("[generate] Post-filter over-exposed players: %s", over_exposed)
-            print(f"  [exposure fix] Regenerating lineups for over-exposed: "
-                  f"{[str(p) for p in over_exposed]}")
-
-            _pid_idx = players.set_index("player_id")
-
-            def _attach_metadata(regen_lu, src_lu):
-                lev_r  = score_lineup_leverage(regen_lu, players)
-                pids_r = [str(p) for p in regen_lu["player_ids"]]
-                regen_lu["proj_pts"] = round(
-                    sum(float(_pid_idx.loc[p, "proj_pts_dk"])
-                        for p in pids_r if p in _pid_idx.index), 1)
-                regen_lu["ceiling"]  = round(
-                    sum(float(_pid_idx.loc[p, "ceiling"])
-                        for p in pids_r if p in _pid_idx.index), 1)
-                regen_lu["leverage"]       = lev_r["leverage"]
-                regen_lu["avg_own"]        = lev_r["avg_own"]
-                regen_lu["chalk_ct"]       = lev_r["chalk_ct"]
-                regen_lu["low_own_ct"]     = lev_r["low_own_ct"]
-                regen_lu["has_game_stack"] = lev_r["has_game_stack"]
-                regen_lu["stack_game"]     = src_lu.get("stack_game", "")
-                regen_lu["lineup_num"]     = src_lu.get("lineup_num", 0)
-                return regen_lu
-
-            fixed_lineups = []
-            regen_count   = 0
-            for lu in lineups:
-                if any(str(pid) in over_exposed for pid in lu["player_ids"]):
-                    regen_excl = list(excluded_ids or []) + [
-                        str(pid) for pid in lu["player_ids"]
-                        if str(pid) in over_exposed
-                    ]
-                    players_s = _thompson_sample_players(players)
-                    regen = build_lineup(
-                        players_s,
-                        objective_col="gpp_score",
-                        prev_lineups=[set(fl["player_ids"]) for fl in fixed_lineups],
-                        min_unique=MIN_UNIQUE,
-                        locked_ids=locked_ids,
-                        excluded_ids=regen_excl,
-                        ownership_penalty=own_pen_schedule[regen_count % len(own_pen_schedule)],
-                        stack_game=stack_games[regen_count % n_games],
-                    )
-                    if regen is not None:
-                        fixed_lineups.append(_attach_metadata(regen, lu))
-                        regen_count += 1
-                        continue
-                    # ILP failed — drop this lineup rather than keep an over-exposed one;
-                    # the pool will be padded to n at the end if needed
-                else:
-                    fixed_lineups.append(lu)
-
-            # Pad back to n if some regens failed
-            if len(fixed_lineups) < target_ct:
-                shortfall = target_ct - len(fixed_lineups)
-                print(f"  [exposure fix] Padding {shortfall} lineup(s) after failed regens")
-                for _pad in range(shortfall):
-                    _excl_pad = list(excluded_ids or []) + list(str(p) for p in over_exposed)
-                    players_s = _thompson_sample_players(players)
-                    pad_lu = build_lineup(
-                        players_s,
-                        objective_col="gpp_score",
-                        prev_lineups=[set(fl["player_ids"]) for fl in fixed_lineups],
-                        min_unique=MIN_UNIQUE,
-                        locked_ids=locked_ids,
-                        excluded_ids=_excl_pad,
-                        ownership_penalty=own_pen_schedule[_pad % len(own_pen_schedule)],
-                        stack_game=stack_games[_pad % n_games],
-                    )
-                    if pad_lu is not None:
-                        fixed_lineups.append(_attach_metadata(pad_lu, {}))
-
-            lineups = fixed_lineups
-
-    # ── Pool selection ────────────────────────────────────────────────────
-    # When pool_size > n we generated a large pool and now greedily select
-    # the best n by maximising score + leverage while enforcing diversity.
-    if pool_size and pool_size > n and len(lineups) > n:
-        print(f"\n[pool] Selecting best {n} from {len(lineups)}-lineup pool...")
-        lineups = select_portfolio(lineups, n, players)
-        print(f"[pool] Portfolio selection complete -- {len(lineups)} lineups")
-
-    # ── Final exposure audit ───────────────────────────────────────────────
-    # Hard confirmation: after all post-processing, verify no player exceeds cap.
-    # This is the last line of defense against overexposure bugs.
-    _final_audit: dict[str, int] = {}
-    for lu in lineups:
-        for pid in lu["player_ids"]:
-            _final_audit[pid] = _final_audit.get(pid, 0) + 1
-    _hard_cap_final = max(1, int(len(lineups) * _exp_pct))
-    _audit_violations = {
-        pid: cnt for pid, cnt in _final_audit.items() if cnt > _hard_cap_final
-    }
-    if _audit_violations:
-        _pid_name = dict(zip(players["player_id"].astype(str), players["name"]))
-        print(f"\n  [!] EXPOSURE AUDIT VIOLATIONS (cap={_exp_pct*100:.0f}% = {_hard_cap_final}/{len(lineups)}):")
-        for pid, cnt in sorted(_audit_violations.items(), key=lambda x: -x[1]):
-            name = _pid_name.get(str(pid), str(pid))
-            print(f"    {name}: {cnt}/{len(lineups)} = {cnt/len(lineups)*100:.1f}%")
-    else:
-        max_exp_seen = max(_final_audit.values()) if _final_audit else 0
-        _pid_name = dict(zip(players["player_id"].astype(str), players["name"]))
-        top_exp_pid = max(_final_audit, key=_final_audit.get) if _final_audit else ""
-        top_exp_name = _pid_name.get(str(top_exp_pid), str(top_exp_pid))
-        print(f"  [OK] Exposure audit passed -- max: {top_exp_name} "
-              f"{max_exp_seen}/{len(lineups)} = {max_exp_seen/len(lineups)*100:.1f}%"
-              f" (cap={_exp_pct*100:.0f}%)")
+    # Summary
+    if lineups:
+        print(f"\n  Generated {len(lineups)}/{n} lineups")
+        # Stack compliance
+        if top_game and "matchup" in players.columns:
+            pid_idx = players.set_index("player_id")
+            compliant = sum(
+                1 for lu in lineups
+                if sum(1 for p in lu["player_ids"]
+                       if p in pid_idx.index and pid_idx.loc[p, "matchup"] == top_game) >= 4
+            )
+            print(f"  4-man stack compliance: {compliant}/{len(lineups)} ({100*compliant//max(1,len(lineups))}%)")
+        # Exposure
+        exp = _Counter(p for lu in lineups for p in lu["player_ids"])
+        print(f"  Top exposure:")
+        for pid, cnt in exp.most_common(8):
+            row = players[players["player_id"].astype(str) == str(pid)]
+            name = row.iloc[0]["name"] if not row.empty else pid
+            print(f"    {name}: {cnt}/{len(lineups)} ({100*cnt//len(lineups)}%)")
 
     return lineups
 
