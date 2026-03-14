@@ -5626,6 +5626,41 @@ def main():
         print("------------------\n")
     except Exception as _e:
         print(f"[warn] News intel agent failed: {_e} -- proceeding without X signals")
+        _intel = {}
+
+    # 3c. Block pure bench players (salary < $5,000) with no confirmed role signal.
+    # Rationale: sub-$5K players only produce value when a starter is injured and they
+    # inherit the starting role. Without a confirmed STARTING_REPLACEMENT or USAGE_INCREASE
+    # signal, they are dead weight (0 FPTS) that destroys a lineup slot.
+    # ON/OFF stats cannot rescue them -- usage only spikes when a specific starter is OUT.
+    #
+    # Exception: players with FC proj_mins >= 24 (genuinely starting or heavy rotation)
+    # are allowed through even without a news signal.
+    _role_signal_pids = set()
+    for _pid, _impacts in (_intel.get("impacts") or {}).items():
+        _sig = _impacts.get("signal_type", "")
+        if _sig in ("STARTING_REPLACEMENT", "USAGE_INCREASE", "CLEARED_FULLY"):
+            _role_signal_pids.add(str(_pid))
+
+    def _has_role_signal(row):
+        return str(row.get("player_id", "")) in _role_signal_pids
+
+    def _fc_mins_ok(row):
+        mins = row.get("fc_mins")
+        return pd.notna(mins) and float(mins) >= 24
+
+    pre_bench = len(players)
+    bench_mask = players["salary"] < 5000
+    no_signal  = ~players.apply(_has_role_signal, axis=1)
+    no_fc_mins = ~players.apply(_fc_mins_ok, axis=1)
+    drop_mask  = bench_mask & no_signal & no_fc_mins
+    players = players[~drop_mask].copy()
+    bench_dropped = pre_bench - len(players)
+    if bench_dropped:
+        print(f"Bench filter: removed {bench_dropped} sub-$5K players with no confirmed role "
+              f"(use injury bump + STARTING_REPLACEMENT signal to unlock)")
+    print(f"Final pool: {len(players)} players\n")
+
 
     # 4. Slate analysis
     print_slate_analysis(players)
