@@ -315,6 +315,96 @@ def apply_game_total_updates(players: pd.DataFrame, new_game_totals: dict) -> pd
     return df
 
 
+def detect_line_movement(players: pd.DataFrame, current_vegas: dict) -> dict:
+    """
+    Compare FC baseline implied totals (fc_team_pts from export time) against
+    current Odds API implied totals to detect sharp line movement.
+
+    Returns a dict: {team_abbr: delta_implied_total}
+    Only includes teams with |delta| >= 1.5 pts (noise filter).
+
+    Why this matters vs just using the current total:
+      A game that moved from 226.5 → 230.5 (+4) with a narrowing spread means
+      sharp money hit the under/over AND the underdog side.  The implied team
+      totals shift UNEQUALLY — the underdog's implied total rises more.
+      Without movement detection we'd apply the same absolute-level factor to
+      both teams.  With it, we correctly weight the team that saw the bigger
+      implied-total shift.
+
+    Example (HOU/NO, 3/13):
+      FC baseline:  HOU 116.75, NO 109.75
+      Current:      HOU 118.00, NO 112.50
+      Delta:        HOU +1.25,  NO +2.75  ← NO is the sharp-money beneficiary
+    """
+    if not current_vegas:
+        return {}
+
+    # Build team → current implied total from Odds API
+    curr_implied: dict[str, float] = {}
+    for matchup, vals in current_vegas.items():
+        if "_meta" in matchup:
+            continue
+        parts = matchup.split("@")
+        if len(parts) != 2:
+            continue
+        away, home = parts[0].strip(), parts[1].strip()
+        curr_implied[home] = float(vals.get("home_implied", vals["total"] / 2))
+        curr_implied[away] = float(vals.get("away_implied", vals["total"] / 2))
+
+    if not curr_implied:
+        return {}
+
+    # Build team → FC baseline implied total (median fc_team_pts per team)
+    if "team" not in players.columns or "fc_team_pts" not in players.columns:
+        return {}
+
+    fc_baseline: dict[str, float] = (
+        players[["team", "fc_team_pts"]]
+        .dropna()
+        .groupby("team")["fc_team_pts"]
+        .median()
+        .to_dict()
+    )
+
+    # Compute deltas
+    MOVEMENT_THRESHOLD = 1.5   # pts — below this is noise
+    deltas: dict[str, float] = {}
+    for team, curr in curr_implied.items():
+        base = fc_baseline.get(team)
+        if base is None or base <= 0:
+            continue
+        delta = round(curr - base, 2)
+        if abs(delta) >= MOVEMENT_THRESHOLD:
+            deltas[team] = delta
+
+    return deltas
+
+
+def apply_line_movement(players: pd.DataFrame, movement: dict) -> pd.DataFrame:
+    """
+    Apply a gpp_score bonus/penalty to teams based on implied-total movement.
+
+    Scale: each point of implied-total movement → 0.25 gpp_score delta.
+    Cap: ±4.0 gpp bonus per player (prevents one signal dominating).
+
+    Only touches gpp_score — not proj_pts_dk or ceiling.  This keeps the
+    projection numbers clean while letting the optimizer prefer players in
+    games with sharp-money confirmation.
+    """
+    if not movement:
+        return players
+
+    df = players.copy()
+    for team, delta in movement.items():
+        mask = df["team"] == team
+        if not mask.any():
+            continue
+        bonus = float(np.clip(delta * 0.25, -4.0, 4.0))
+        df.loc[mask, "gpp_score"] = (df.loc[mask, "gpp_score"] + bonus).round(3)
+
+    return df
+
+
 def build_game_totals_from_pool(players: pd.DataFrame) -> dict:
     """
     Build a game-totals dict from the uploaded player pool.
@@ -1792,8 +1882,13 @@ def load_fc_data(fc_path: "Path | str | None" = None) -> "pd.DataFrame | None":
         out["fc_usg"]     = pd.to_numeric(df.get("USG",     pd.Series(dtype=float)), errors="coerce")  # +0.501 corr
         out["fc_stdv36"]  = pd.to_numeric(df.get("STDV/36", pd.Series(dtype=float)), errors="coerce")  # ceiling width
         out["fc_avg36"]   = pd.to_numeric(df.get("AVG/36",  pd.Series(dtype=float)), errors="coerce")  # +0.429 corr
-        # Team implied total (TeamPts) — better stack signal than game O/U
+        # Team/Opp implied totals + game total at FC export time (used as baseline
+        # for line movement detection vs current Odds API fetch)
         out["fc_team_pts"] = pd.to_numeric(df.get("TeamPts", pd.Series(dtype=float)), errors="coerce")
+        out["fc_opp_pts"]  = pd.to_numeric(df.get("OppPts",  pd.Series(dtype=float)), errors="coerce")
+        out["fc_total"]    = (out["fc_team_pts"].fillna(0) + out["fc_opp_pts"].fillna(0)).where(
+            out["fc_team_pts"].notna() & out["fc_opp_pts"].notna()
+        ).round(1)
         # FPPM-based projection: proj_mins * FPPM = direct DK point estimate
         out["fc_fppm_proj"] = (out["fc_mins"] * out["fc_fppm"]).round(2)
         # Drop rows with no usable projection
@@ -5748,6 +5843,28 @@ def main():
               f"(use injury bump + STARTING_REPLACEMENT signal to unlock)")
     print(f"Final pool: {len(players)} players\n")
 
+    # 3d. Line movement detection (FC baseline vs current Odds API).
+    # FC implied totals (fc_team_pts) were set when FC was exported, typically
+    # hours before game time.  Sharp bettors move lines between then and tip-off.
+    # A team whose implied total rises ≥1.5 pts since FC export got sharp action —
+    # their players deserve a gpp_score bonus even if the absolute level already
+    # looks good.  Critically, spread movement splits the bonus correctly:
+    # a narrowing spread with a rising total means the UNDERDOG benefits more.
+    _movement: dict = {}
+    try:
+        if "_vegas" in dir() and _vegas and not any(k == "_meta" for k in _vegas):
+            _movement = detect_line_movement(players, _vegas)
+            if _movement:
+                players = apply_line_movement(players, _movement)
+                print("--- LINE MOVEMENT (FC baseline vs current) ---")
+                for _team, _delta in sorted(_movement.items(), key=lambda x: -x[1]):
+                    _arrow = "↑" if _delta > 0 else "↓"
+                    _bonus = float(np.clip(_delta * 0.25, -4.0, 4.0))
+                    print(f"  {_team:<4s} implied total {_arrow}{abs(_delta):.1f}  "
+                          f"→ gpp_score {'+' if _bonus >= 0 else ''}{_bonus:.2f} per player")
+                print("----------------------------------------------\n")
+    except Exception as _mv_err:
+        pass   # movement detection is non-critical
 
     # 4. Slate analysis
     print_slate_analysis(players)
