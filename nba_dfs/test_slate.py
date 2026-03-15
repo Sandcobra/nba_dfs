@@ -2234,13 +2234,36 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
     )
     out["floor"] = (out["proj_pts_dk"] - 1.28 * out["proj_std"]).clip(0).round(2)
 
+    # Detect expansion plays: FC projects player 35%+ above their season avg.
+    # These are injury replacements filling a new role — historical avg is irrelevant.
+    # Examples: Justin Edwards (avg 10.9, fc_proj 20.0 on 3/14), Mitchell Robinson
+    # ($4K, avg 13pts, fc_proj 28pts replacing KAT). For these players, FC is the
+    # only reliable signal. We give it 85-90% weight instead of the normal 60-65%.
+    _is_expansion = pd.Series(False, index=out.index)
+    if "fc_proj" in out.columns and "avg_pts" in out.columns:
+        _is_expansion = (
+            out["fc_proj"].fillna(0).gt(0) &
+            out["avg_pts"].fillna(0).gt(0) &
+            (out["fc_proj"] > out["avg_pts"].fillna(0) * 1.35) &
+            (out["fc_proj"] > 12)
+        )
+
     # Blend FC floor/ceiling when available — FC uses actual pace/matchup data
     if "fc_ceiling" in out.columns:
         has_fc_ceil = out["fc_ceiling"].notna() & (out["fc_ceiling"] > 0)
-        out.loc[has_fc_ceil, "ceiling"] = (
-            out.loc[has_fc_ceil, "fc_ceiling"] * 0.65 +
-            out.loc[has_fc_ceil, "ceiling"]    * 0.35
-        ).round(2)
+        # Expansion plays: trust FC ceiling 90% — their model ceiling is meaningless
+        _exp_ceil = has_fc_ceil & _is_expansion
+        _norm_ceil = has_fc_ceil & ~_is_expansion
+        if _exp_ceil.any():
+            out.loc[_exp_ceil, "ceiling"] = (
+                out.loc[_exp_ceil, "fc_ceiling"] * 0.90 +
+                out.loc[_exp_ceil, "ceiling"]    * 0.10
+            ).round(2)
+        if _norm_ceil.any():
+            out.loc[_norm_ceil, "ceiling"] = (
+                out.loc[_norm_ceil, "fc_ceiling"] * 0.65 +
+                out.loc[_norm_ceil, "ceiling"]    * 0.35
+            ).round(2)
     if "fc_floor" in out.columns and "floor" in out.columns:
         has_fc_floor = out["fc_floor"].notna() & (out["fc_floor"] > 0)
         out.loc[has_fc_floor, "floor"] = (
@@ -2376,20 +2399,46 @@ def build_projections(df: pd.DataFrame, cutoff_date: str = "") -> pd.DataFrame:
 
         fc_n = has_fc.sum()
         if fc_n > 0:
-            # Where both FC Proj and FPPM*Mins are available: 3-way blend
             both = has_fc & has_fppm
             fc_only = has_fc & ~has_fppm
-            out.loc[both, "proj_pts_dk"] = (
-                out.loc[both, "fc_proj"]        * 0.55 +
-                out.loc[both, "fc_fppm_proj"]   * 0.20 +
-                out.loc[both, "proj_pts_dk"]    * 0.25
-            ).round(2)
-            # Where only FC Proj is available: 2-way blend
-            out.loc[fc_only, "proj_pts_dk"] = (
-                out.loc[fc_only, "fc_proj"]     * 0.60 +
-                out.loc[fc_only, "proj_pts_dk"] * 0.40
-            ).round(2)
-            _logging_fc.info("[fc] Blended FC+FPPM projection for %d players (%d 3-way)", fc_n, int(both.sum()))
+
+            # Expansion plays (fc_proj > avg * 1.35): trust FC 85% — new role, avg is stale
+            _exp = _is_expansion if "_is_expansion" in dir() else pd.Series(False, index=out.index)
+            _exp_both    = both    & _exp
+            _exp_fc_only = fc_only & _exp
+            _norm_both    = both    & ~_exp
+            _norm_fc_only = fc_only & ~_exp
+
+            # Expansion: 3-way
+            if _exp_both.any():
+                out.loc[_exp_both, "proj_pts_dk"] = (
+                    out.loc[_exp_both, "fc_proj"]      * 0.75 +
+                    out.loc[_exp_both, "fc_fppm_proj"] * 0.15 +
+                    out.loc[_exp_both, "proj_pts_dk"]  * 0.10
+                ).round(2)
+            # Expansion: fc-only
+            if _exp_fc_only.any():
+                out.loc[_exp_fc_only, "proj_pts_dk"] = (
+                    out.loc[_exp_fc_only, "fc_proj"]     * 0.85 +
+                    out.loc[_exp_fc_only, "proj_pts_dk"] * 0.15
+                ).round(2)
+            # Normal: 3-way blend
+            if _norm_both.any():
+                out.loc[_norm_both, "proj_pts_dk"] = (
+                    out.loc[_norm_both, "fc_proj"]        * 0.55 +
+                    out.loc[_norm_both, "fc_fppm_proj"]   * 0.20 +
+                    out.loc[_norm_both, "proj_pts_dk"]    * 0.25
+                ).round(2)
+            # Normal: fc-only
+            if _norm_fc_only.any():
+                out.loc[_norm_fc_only, "proj_pts_dk"] = (
+                    out.loc[_norm_fc_only, "fc_proj"]     * 0.60 +
+                    out.loc[_norm_fc_only, "proj_pts_dk"] * 0.40
+                ).round(2)
+            _logging_fc.info(
+                "[fc] Blended FC+FPPM projection: %d players (%d expansion, %d 3-way)",
+                fc_n, int(_exp.sum()), int(both.sum())
+            )
 
     # Use FC projected minutes for more accurate DNP risk when available.
     # Pros use proj_mins as a DNP proxy: < 15 mins projected = genuine DNP risk.
