@@ -299,6 +299,7 @@ async def upload_csv(file: UploadFile = File(...)):
             "is_b2b", "b2b_penalty", "b2b_boost", "dvp_mult",
             "tail_index", "regime_factor",
             "field_own_est", "fc_vs_avg_ratio",
+            "proj_mins",
         ]
         # Only include columns that exist (guard against future changes)
         cols = [c for c in cols if c in players.columns]
@@ -358,11 +359,48 @@ async def upload_fc_csv(file: UploadFile = File(...)):
                        "Proj Mins, and FC Proj columns."
             )
         _state["fc_data"] = fc
+
+        # If salary CSV is already loaded, re-merge FC into the live player pool
+        # so stacks, proj_mins, and injured player filtering update immediately.
+        refresh_payload = {}
+        if _state["players"] is not None and _state.get("salary_csv_path"):
+            try:
+                _raw = parse_salary_file(Path(_state["salary_csv_path"]))
+                _raw = _merge_fc(_raw, fc)
+                _players = build_projections(_raw)
+                _players = _players[_players["proj_pts_dk"] > 0].copy()
+                _state["players"] = _players
+                _state["_full_pool_snapshot"] = _players.copy()
+
+                # Rebuild stacks and serialisable pool for UI refresh
+                _stacks = find_top_stacks(_players)
+                for s in _stacks:
+                    s["players"] = s["players"][:4]
+                _cols = [
+                    "player_id", "name", "team", "primary_position", "archetype", "salary",
+                    "avg_pts", "proj_pts_dk", "ceiling", "floor",
+                    "value", "proj_own", "gpp_score", "matchup", "game_total", "eligible_slots",
+                    "is_b2b", "b2b_penalty", "b2b_boost", "dvp_mult",
+                    "tail_index", "regime_factor", "field_own_est", "fc_vs_avg_ratio",
+                    "proj_mins",
+                ]
+                _cols = [c for c in _cols if c in _players.columns]
+                _pool = _players[_cols].copy()
+                _pool["eligible_slots"] = _pool["eligible_slots"].apply(lambda x: "/".join(x))
+                refresh_payload = {
+                    "players_refreshed": len(_players),
+                    "players": _pool.to_dict(orient="records"),
+                    "stacks": _stacks[:8],
+                }
+            except Exception as _re:
+                refresh_payload = {"refresh_error": str(_re)}
+
         return {
             "status": "ok",
             "players_loaded": len(fc),
             "message": f"FC data loaded: {len(fc)} players with FC Proj, Proj Own%, Proj Mins. "
-                       f"Upload your DK salary CSV now to apply it."
+                       f"Upload your DK salary CSV now to apply it.",
+            **refresh_payload,
         }
     except HTTPException:
         raise

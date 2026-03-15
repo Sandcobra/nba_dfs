@@ -781,6 +781,7 @@ tbody td{padding:9px 12px;white-space:nowrap}
               <th onclick="sortTable('avg_pts')">Avg <span class="sort-arrow"></span></th>
               <th onclick="sortTable('proj_pts_dk')">Proj <span class="sort-arrow"></span></th>
               <th onclick="sortTable('ceiling')">Ceil <span class="sort-arrow"></span></th>
+              <th onclick="sortTable('proj_mins')" title="Projected minutes tonight. Sort ascending to find sub-24 min players to exclude.">Proj Min <span class="sort-arrow"></span></th>
               <th onclick="sortTable('value')">Value <span class="sort-arrow"></span></th>
               <th onclick="sortTable('proj_own')">Own% <span class="sort-arrow"></span></th>
               <th onclick="sortTable('gpp_score')">GPP <span class="sort-arrow"></span></th>
@@ -1102,7 +1103,25 @@ async function uploadFCFile(e) {
     if (!res.ok) throw new Error(data.detail || 'FC upload failed');
     $('fc-drop-label').textContent = '\u2713 ' + file.name;
     $('fc-badge').style.display = 'inline';
-    toast('FC data loaded: ' + data.players_loaded + ' players. Now upload your DK salary CSV.', 'success');
+    $('lineup-upload-btn').disabled = false;
+    $('contest-upload-btn').disabled = false;
+
+    // If server returned a refreshed player pool (salary CSV was already loaded),
+    // update the dashboard immediately — stacks and proj_mins will reflect injuries.
+    if (data.players && data.players.length > 0) {
+      state.players = data.players;
+      renderPlayers();
+      if (data.stacks) renderStacks(data.stacks);
+      toast('FC data merged: ' + data.players_refreshed + ' players updated. Injured players removed from stacks.', 'success');
+    } else {
+      const hasPlayers = state.players && state.players.length > 0;
+      toast(
+        hasPlayers
+          ? 'FC data updated: ' + data.players_loaded + ' players. You can now Upload Previous Lineups for late swap.'
+          : 'FC data loaded: ' + data.players_loaded + ' players. Now upload your DK salary CSV.',
+        'success'
+      );
+    }
   } catch (err) {
     $('fc-drop-label').textContent = 'Drop Fantasy Cruncher CSV';
     toast('FC upload failed: ' + err.message, 'error');
@@ -1237,7 +1256,7 @@ function sortTable(col) {
     th.classList.remove('sort-asc','sort-desc');
   });
   const headers = document.querySelectorAll('#player-table thead th');
-  const colMap = ['primary_position','name','team','salary','avg_pts','proj_pts_dk','ceiling','value','proj_own','gpp_score','matchup'];
+  const colMap = ['primary_position','name','team','archetype','salary','avg_pts','proj_pts_dk','ceiling','proj_mins','value','proj_own','gpp_score','tail_index','dvp_mult','matchup'];
   const idx = colMap.indexOf(col);
   if (idx >= 0) headers[idx].classList.add('sort-' + state.sortDir);
   renderPlayerTable(state.players);
@@ -1340,6 +1359,7 @@ function renderPlayerTable(players) {
         <td class="td-own">${fmt(p.avg_pts)}</td>
         <td>${projCell}</td>
         <td class="td-ceil">${fmt(p.ceiling)}</td>
+        <td style="font-size:12px;font-weight:700;color:${(+p.proj_mins||0)<24?'var(--red)':(+p.proj_mins||0)<28?'var(--gold)':'var(--text)'}" title="Projected minutes tonight">${p.proj_mins!=null?((+p.proj_mins)||0).toFixed(0):'—'}</td>
         <td class="td-val">${fmt(p.value,2)}x</td>
         <td class="td-own">${fmt(p.proj_own,1)}%</td>
         <td class="td-proj">${fmt(p.gpp_score,1)}</td>
