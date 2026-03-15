@@ -2750,7 +2750,8 @@ def build_lineup(
     stack_game: str = None,
     stack_bonus: float = 0.12,
     bringback_bonus: float = 0.06,
-    force_stack: bool = True,        # add hard ILP constraint (>=3 from stack_game); set False in fallbacks
+    force_stack: bool = True,        # add hard ILP constraint (>=N from stack_game); set False in fallbacks
+    min_stack_size: int = 3,         # minimum players from stack_game (3 on large slates, 4 on small/3-game slates)
     barbell_params: dict = None,
     correlation_pairs: dict = None,
     correlation_bonus: float = 2.5,
@@ -2905,8 +2906,8 @@ def build_lineup(
             i for i in _hard_sg_idx
             if str(players["player_id"].iloc[i]) not in _excl_set
         ]
-        if len(_non_excl_sg) >= 3:
-            prob += pulp.lpSum(x[i] for i in _hard_sg_idx) >= 3
+        if len(_non_excl_sg) >= min_stack_size:
+            prob += pulp.lpSum(x[i] for i in _hard_sg_idx) >= min_stack_size
 
     # Salary barbell structure: driven by SlateConstructionAgent parameters.
     # Thresholds and minimums are adaptive to tonight's slate salary distribution.
@@ -3566,6 +3567,20 @@ def generate_gpp_lineups(
     top_game = stack_games[0] if stack_games else None
     second_game = stack_games[1] if len(stack_games) > 1 else top_game
 
+    # ── Slate size → dynamic min stack size ──────────────────────────────────────
+    # From cross-slate analysis (3/6-3/14, 800+ top-1% lineups):
+    #   3 games  → 4-man stacks in 77.5% of top-1% lineups (3/14 confirmed)
+    #   4-5 games → 3-man stacks are the mode; 4-man still common
+    #   6+ games  → 2-3 is correct; hard minimum 3
+    _n_slate_games = int(players["matchup"].nunique()) if "matchup" in players.columns else 7
+    if _n_slate_games <= 3:
+        _min_stack_size = 4
+    elif _n_slate_games <= 5:
+        _min_stack_size = 3
+    else:
+        _min_stack_size = 3
+    print(f"\n  Slate size: {_n_slate_games} games → min stack size = {_min_stack_size}")
+
     # ── Slate regime detection ────────────────────────────────────────────────────
     # Count injury-replacement signals across the slate.
     # When >20% of active players show mins_expansion > 1.25, the slate is
@@ -3899,6 +3914,7 @@ def generate_gpp_lineups(
             stack_bonus=0.20,
             bringback_bonus=0.10,
             force_stack=t_force,
+            min_stack_size=_min_stack_size,
             max_premium_players=3,
             correlation_pairs=_corr_pairs,
             min_proj_total=_min_proj_floor,
@@ -3920,6 +3936,7 @@ def generate_gpp_lineups(
                 stack_bonus=0.20,
                 bringback_bonus=0.10,
                 force_stack=t_force,
+                min_stack_size=_min_stack_size,
                 max_premium_players=3,
                 correlation_pairs=_corr_pairs,
                 min_proj_total=_min_proj_floor,
@@ -3941,6 +3958,7 @@ def generate_gpp_lineups(
                 stack_bonus=0.20,
                 bringback_bonus=0.10,
                 force_stack=False,
+                min_stack_size=3,          # always relax to 3 on final fallback
                 max_premium_players=None,
                 correlation_pairs=_corr_pairs,
                 min_proj_total=None,
