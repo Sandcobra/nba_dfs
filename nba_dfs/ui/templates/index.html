@@ -1210,10 +1210,15 @@ function renderOverview(data) {
       </div>`;
   });
 
-  // Stacks
+  renderStacks(data.stacks||[]);
+
+}
+
+function renderStacks(stacks) {
   const sg = $('stacks-grid');
+  if (!sg) return;
   sg.innerHTML = '';
-  (data.stacks||[]).slice(0,8).forEach(s => {
+  (stacks||[]).slice(0,8).forEach(s => {
     sg.innerHTML += `
       <div class="stack-card">
         <div class="sk-header">
@@ -1224,7 +1229,6 @@ function renderOverview(data) {
         <div class="sk-proj">${fmt(s.proj)} pts combined</div>
       </div>`;
   });
-
 }
 
 // ── Player table ───────────────────────────────────────────────────────────
